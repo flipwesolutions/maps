@@ -55,7 +55,12 @@ export default function TurnByTurnPanel({
           </Text>
           {isNavigating && (
             <Text style={styles.navHint}>
-              Green arrow follows your drive direction
+              Direction arrow follows your drive · voice · auto-reroute
+            </Text>
+          )}
+          {!isNavigating && (
+            <Text style={styles.navHint}>
+              Start for voice turns, live ETA, and rerouting
             </Text>
           )}
         </View>

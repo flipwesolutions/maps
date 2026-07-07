@@ -6,8 +6,12 @@ import React, {
   useMemo,
   useRef,
 } from "react";
-import { StyleSheet } from "react-native";
+import { Image, StyleSheet } from "react-native";
 import { WebView, type WebViewMessageEvent } from "react-native-webview";
+
+const NAV_ARROW_URI = Image.resolveAssetSource(
+  require("../assets/nav-arrow.png")
+).uri;
 
 export interface MapMarker {
   id: string;
@@ -23,6 +27,7 @@ export interface MapWebViewRef {
   clearRoute: () => void;
   followNavigation: (coordinates: [number, number], heading: number) => void;
   exitNavigationMode: () => void;
+  updateRouteProgress: (remaining: [number, number][]) => void;
 }
 
 interface MapWebViewProps {
@@ -48,9 +53,18 @@ function buildMapHtml(
   zoom: number,
   markers: MapMarker[],
   minZoom: number,
-  maxZoom: number
+  maxZoom: number,
+  navArrowUri: string
 ) {
-  const payload = JSON.stringify({ mapStyle, center, zoom, markers, minZoom, maxZoom });
+  const payload = JSON.stringify({
+    mapStyle,
+    center,
+    zoom,
+    markers,
+    minZoom,
+    maxZoom,
+    navArrowUri,
+  });
 
   return `<!DOCTYPE html>
 <html>
@@ -84,22 +98,20 @@ function buildMapHtml(
     }
     .user-nav-wrap {
       position: relative;
-      width: 48px; height: 48px;
-      display: flex; align-items: center; justify-content: center;
+      width: 44px;
+      height: 44px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
     }
-    .user-nav-arrow {
-      width: 0; height: 0;
-      border-left: 12px solid transparent;
-      border-right: 12px solid transparent;
-      border-bottom: 28px solid #22c55e;
-      filter: drop-shadow(0 2px 6px rgba(0,0,0,0.35));
-      transform: translateY(-4px);
-    }
-    .user-nav-ring {
-      position: absolute;
-      width: 16px; height: 16px; border-radius: 50%;
-      background: #22c55e; border: 3px solid #fff;
-      box-shadow: 0 0 0 2px rgba(34,197,94,0.35);
+    .user-nav-img {
+      width: 40px;
+      height: 40px;
+      object-fit: contain;
+      pointer-events: none;
+      transform: rotate(-90deg);
+      filter: drop-shadow(0 2px 5px rgba(0,0,0,0.45));
+      mix-blend-mode: lighten;
     }
     .endpoint-dot {
       width: 14px; height: 14px; border-radius: 50%;
@@ -182,12 +194,12 @@ function buildMapHtml(
       if (isNav) {
         const wrap = document.createElement("div");
         wrap.className = "user-nav-wrap";
-        const arrow = document.createElement("div");
-        arrow.className = "user-nav-arrow";
-        const ring = document.createElement("div");
-        ring.className = "user-nav-ring";
-        wrap.appendChild(arrow);
-        wrap.appendChild(ring);
+        const img = document.createElement("img");
+        img.className = "user-nav-img";
+        img.src = CONFIG.navArrowUri;
+        img.alt = "";
+        img.draggable = false;
+        wrap.appendChild(img);
         return wrap;
       }
       const el = document.createElement("div");
@@ -249,12 +261,19 @@ function buildMapHtml(
         userMarker.setRotation(0);
       }
 
+      const lookMeters = 120;
+      const brng = (userHeading * Math.PI) / 180;
+      const latRad = (lat * Math.PI) / 180;
+      const offsetLat = lat + (lookMeters / 111320) * Math.cos(brng);
+      const offsetLng = lng + (lookMeters / (111320 * Math.cos(latRad))) * Math.sin(brng);
+
       map.easeTo({
-        center: [lng, lat],
+        center: [offsetLng, offsetLat],
         bearing: userHeading,
-        zoom: Math.max(map.getZoom(), 17),
-        pitch: 0,
-        duration: 280,
+        zoom: 18,
+        pitch: 52,
+        padding: { top: 24, bottom: 100, left: 16, right: 16 },
+        duration: 320,
         essential: true,
       });
     };
@@ -437,6 +456,17 @@ function buildMapHtml(
       map.fitBounds(bounds, { padding: { top: 70, bottom: 90, left: 40, right: 40 }, duration: 900 });
     };
 
+    window.updateRouteProgress = function(remainingCoords) {
+      if (!map || !remainingCoords || remainingCoords.length < 2) return;
+      clearAllRoutes();
+      ensureRouteLayers("#3b82f6");
+      map.getSource("route").setData({
+        type: "Feature",
+        properties: {},
+        geometry: { type: "LineString", coordinates: remainingCoords },
+      });
+    };
+
     window.clearRoute = function() {
       clearAllRoutes();
     };
@@ -491,7 +521,16 @@ const MapWebView = forwardRef<MapWebViewRef, MapWebViewProps>(function MapWebVie
   const readyRef = useRef(false);
 
   const html = useMemo(
-    () => buildMapHtml(mapStyle, center, zoom, markers, minZoom, maxZoom),
+    () =>
+      buildMapHtml(
+        mapStyle,
+        center,
+        zoom,
+        markers,
+        minZoom,
+        maxZoom,
+        NAV_ARROW_URI
+      ),
     [mapStyle, center, zoom, markers, minZoom, maxZoom]
   );
 
@@ -524,6 +563,11 @@ const MapWebView = forwardRef<MapWebViewRef, MapWebViewProps>(function MapWebVie
     },
     exitNavigationMode: () => {
       runInMap("window.exitNavigationMode()");
+    },
+    updateRouteProgress: (remaining) => {
+      runInMap(
+        `window.updateRouteProgress(${JSON.stringify(remaining)})`
+      );
     },
   }));
 

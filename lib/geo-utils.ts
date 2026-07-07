@@ -79,7 +79,79 @@ export function resolveHeading(
   return previousHeading;
 }
 
-/** Index of the next step the user should follow. */
+/** Closest point on segment a→b; t is 0..1 along the segment. */
+export function closestPointOnSegment(
+  point: [number, number],
+  a: [number, number],
+  b: [number, number]
+): { point: [number, number]; t: number } {
+  const [px, py] = point;
+  const [ax, ay] = a;
+  const [bx, by] = b;
+  const dx = bx - ax;
+  const dy = by - ay;
+  const lenSq = dx * dx + dy * dy;
+  if (lenSq === 0) return { point: a, t: 0 };
+
+  let t = ((px - ax) * dx + (py - ay) * dy) / lenSq;
+  t = Math.max(0, Math.min(1, t));
+  return { point: [ax + t * dx, ay + t * dy], t };
+}
+
+/** Snap GPS to route polyline and return progress along it. */
+export function closestPointOnPolyline(
+  point: [number, number],
+  polyline: [number, number][]
+): {
+  index: number;
+  point: [number, number];
+  distanceMeters: number;
+  distanceAlongMeters: number;
+} {
+  if (polyline.length === 0) {
+    return { index: 0, point, distanceMeters: 0, distanceAlongMeters: 0 };
+  }
+  if (polyline.length === 1) {
+    return {
+      index: 0,
+      point: polyline[0],
+      distanceMeters: distanceMeters(point, polyline[0]),
+      distanceAlongMeters: 0,
+    };
+  }
+
+  let bestDist = Infinity;
+  let bestPoint: [number, number] = polyline[0];
+  let bestIndex = 0;
+  let bestAlong = 0;
+  let distanceAlong = 0;
+
+  for (let i = 0; i < polyline.length - 1; i++) {
+    const a = polyline[i];
+    const b = polyline[i + 1];
+    const segLen = distanceMeters(a, b);
+    const { point: closest, t } = closestPointOnSegment(point, a, b);
+    const d = distanceMeters(point, closest);
+    const along = distanceAlong + segLen * t;
+
+    if (d < bestDist) {
+      bestDist = d;
+      bestPoint = closest;
+      bestIndex = i;
+      bestAlong = along;
+    }
+    distanceAlong += segLen;
+  }
+
+  return {
+    index: bestIndex,
+    point: bestPoint,
+    distanceMeters: bestDist,
+    distanceAlongMeters: bestAlong,
+  };
+}
+
+/** Index of the next step the user should follow (legacy helper). */
 export function findCurrentStepIndex(
   userLocation: [number, number],
   steps: { location: [number, number] }[]

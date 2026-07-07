@@ -3,7 +3,11 @@ import { distanceMeters, viaPointOffset } from "./geo-utils";
 export interface RouteStep {
   instruction: string;
   distanceMeters: number;
+  durationSeconds: number;
   location: [number, number];
+  type: string;
+  modifier?: string;
+  streetName?: string;
 }
 
 export interface RouteResult {
@@ -50,16 +54,35 @@ function formatManeuver(step: OsrmStep): string {
   const street = step.name ? ` onto ${step.name}` : "";
 
   if (type === "depart") return `Head${street}`;
-  if (type === "arrive") return "You have arrived";
-  if (type === "roundabout") return `Take the roundabout${street}`;
+  if (type === "arrive") return "You have arrived at your destination";
+  if (type === "roundabout") {
+    return modifier
+      ? `At the roundabout, take the ${modifier} exit${street}`
+      : `Enter the roundabout${street}`;
+  }
   if (type === "merge") return `Merge${street}`;
-  if (type === "fork") return `Keep ${modifier ?? "straight"}${street}`;
-  if (type === "end of road") return `Turn ${modifier ?? "left"}${street}`;
+  if (type === "fork") {
+    if (modifier === "left") return `Keep left at the fork${street}`;
+    if (modifier === "right") return `Keep right at the fork${street}`;
+    return `Keep straight at the fork${street}`;
+  }
+  if (type === "end of road") {
+    if (modifier === "left") return `Turn left${street}`;
+    if (modifier === "right") return `Turn right${street}`;
+    return `Continue${street}`;
+  }
 
   if (type === "turn" || type === "new name" || type === "continue") {
     const dir = modifier ?? "straight";
-    if (dir === "straight") return `Continue${street}`;
-    return `Turn ${dir}${street}`;
+    if (dir === "straight") return `Continue straight${street}`;
+    if (dir === "uturn") return `Make a U-turn${street}`;
+    if (dir === "slight left") return `Slight left${street}`;
+    if (dir === "slight right") return `Slight right${street}`;
+    if (dir === "sharp left") return `Turn sharp left${street}`;
+    if (dir === "sharp right") return `Turn sharp right${street}`;
+    if (dir === "left") return `Turn left${street}`;
+    if (dir === "right") return `Turn right${street}`;
+    return `Continue${street}`;
   }
 
   return `Continue${street}`;
@@ -70,7 +93,11 @@ function parseOsrmRoute(route: OsrmRoute, label?: string): RouteResult {
   const steps: RouteStep[] = rawSteps.map((step) => ({
     instruction: formatManeuver(step),
     distanceMeters: step.distance,
+    durationSeconds: step.duration,
     location: step.maneuver.location,
+    type: step.maneuver.type,
+    modifier: step.maneuver.modifier,
+    streetName: step.name || undefined,
   }));
 
   return {
@@ -79,6 +106,60 @@ function parseOsrmRoute(route: OsrmRoute, label?: string): RouteResult {
     durationSeconds: route.duration,
     steps,
     label,
+  };
+}
+
+const ENDPOINT_SNAP_METERS = 30;
+
+/** Snap route polyline to exact pickup/destination so the line reaches both pins. */
+export function alignRouteToEndpoints(
+  route: RouteResult,
+  from: [number, number],
+  to: [number, number]
+): RouteResult {
+  let coordinates = [...route.coordinates];
+
+  if (coordinates.length === 0) {
+    coordinates = [from, to];
+  } else {
+    if (distanceMeters(coordinates[0], from) > ENDPOINT_SNAP_METERS) {
+      coordinates.unshift(from);
+    } else {
+      coordinates[0] = from;
+    }
+    const last = coordinates.length - 1;
+    if (distanceMeters(coordinates[last], to) > ENDPOINT_SNAP_METERS) {
+      coordinates.push(to);
+    } else {
+      coordinates[last] = to;
+    }
+  }
+
+  const steps =
+    route.steps.length > 0
+      ? route.steps.map((step, i) =>
+          i === route.steps.length - 1 ? { ...step, location: to } : step
+        )
+      : route.steps;
+
+  const startGap =
+    route.coordinates.length > 0
+      ? Math.max(0, distanceMeters(route.coordinates[0], from) - ENDPOINT_SNAP_METERS)
+      : 0;
+  const endGap =
+    route.coordinates.length > 0
+      ? Math.max(
+          0,
+          distanceMeters(route.coordinates[route.coordinates.length - 1], to) -
+            ENDPOINT_SNAP_METERS
+        )
+      : 0;
+
+  return {
+    ...route,
+    coordinates,
+    steps,
+    distanceMeters: route.distanceMeters + startGap + endGap,
   };
 }
 
@@ -216,10 +297,17 @@ export async function fetchDrivingRoutes(
   return routes
     .sort((a, b) => a.durationSeconds - b.durationSeconds)
     .slice(0, MAX_ROUTES)
-    .map((r, i) => ({
-      ...r,
-      label: i === 0 ? "Fastest" : r.label ?? `Route ${String.fromCharCode(65 + i)}`,
-    }));
+    .map((r, i) =>
+      alignRouteToEndpoints(
+        {
+          ...r,
+          label:
+            i === 0 ? "Fastest" : r.label ?? `Route ${String.fromCharCode(65 + i)}`,
+        },
+        from,
+        to
+      )
+    );
 }
 
 /** Single route fallback. */

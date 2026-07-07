@@ -18,6 +18,7 @@ import LocationSearchPanel, {
 import RouteOptionsPanel from "./components/RouteOptionsPanel";
 import SavedPlacesBar from "./components/SavedPlacesBar";
 import TurnByTurnPanel from "./components/TurnByTurnPanel";
+import NavigationBanner from "./components/NavigationBanner";
 import {
   fetchDrivingRoutes,
   formatDistance,
@@ -36,7 +37,18 @@ import {
   removeSavedPlace,
   isPlaceSaved,
 } from "./lib/saved-places";
-import { findCurrentStepIndex, resolveHeading, bearingBetween } from "./lib/geo-utils";
+import { resolveHeading } from "./lib/geo-utils";
+import {
+  computeNavigationProgress,
+  navigationHeading,
+  type NavigationProgress,
+} from "./lib/navigation";
+import {
+  resetVoiceNavigation,
+  updateVoiceGuidance,
+  announceRerouting,
+  announceArrival,
+} from "./lib/voice-navigation";
 import { INDIA_CENTER, INDIA_ZOOM } from "./lib/india-places";
 import {
   MAP_STYLE,
@@ -62,6 +74,12 @@ function IndiaExploreApp() {
   const prevHeadingRef = useRef(0);
   const compassHeadingRef = useRef<number | null>(null);
   const routeStepsRef = useRef<RouteStep[]>([]);
+  const activeRouteRef = useRef<RouteResult | null>(null);
+  const dropCoordsRef = useRef<[number, number] | null>(null);
+  const rerouteCooldownRef = useRef(0);
+  const offRouteSinceRef = useRef<number | null>(null);
+  const arrivedRef = useRef(false);
+  const isReroutingRef = useRef(false);
 
   const [userLocation, setUserLocation] = useState<[number, number] | null>(null);
   const [userHeading, setUserHeading] = useState(0);
@@ -85,6 +103,9 @@ function IndiaExploreApp() {
   const [routeSteps, setRouteSteps] = useState<RouteStep[]>([]);
   const [currentStepIndex, setCurrentStepIndex] = useState(0);
   const [turnByTurnActive, setTurnByTurnActive] = useState(false);
+  const [navProgress, setNavProgress] = useState<NavigationProgress | null>(null);
+  const [isRerouting, setIsRerouting] = useState(false);
+  const [showNavSteps, setShowNavSteps] = useState(false);
 
   const [routeInfo, setRouteInfo] = useState<{
     distanceMeters: number;
@@ -103,6 +124,12 @@ function IndiaExploreApp() {
     headingSub.current?.remove();
     headingSub.current = null;
     compassHeadingRef.current = null;
+    resetVoiceNavigation();
+    arrivedRef.current = false;
+    offRouteSinceRef.current = null;
+    setNavProgress(null);
+    setIsRerouting(false);
+    setShowNavSteps(false);
     setTurnByTurnActive(false);
     mapRef.current?.exitNavigationMode();
   }, []);
@@ -114,6 +141,7 @@ function IndiaExploreApp() {
     setRouteInfo(null);
     setRouteSteps([]);
     setCurrentStepIndex(0);
+    activeRouteRef.current = null;
     stopLocationWatch();
   }, [stopLocationWatch]);
 
@@ -123,6 +151,7 @@ function IndiaExploreApp() {
       if (!route) return;
       setSelectedRouteIndex(index);
       setRouteSteps(route.steps);
+      activeRouteRef.current = route;
       setRouteInfo({
         distanceMeters: route.distanceMeters,
         durationSeconds: route.durationSeconds,
@@ -136,9 +165,52 @@ function IndiaExploreApp() {
     []
   );
 
+  const rerouteFromCurrentPosition = useCallback(async (from: [number, number]) => {
+    const destination = dropCoordsRef.current;
+    if (!destination || isReroutingRef.current) return;
+    const now = Date.now();
+    if (now - rerouteCooldownRef.current < 12000) return;
+
+    rerouteCooldownRef.current = now;
+    isReroutingRef.current = true;
+    setIsRerouting(true);
+    announceRerouting();
+
+    try {
+      const allRoutes = await fetchDrivingRoutes(from, destination);
+      const route = allRoutes[0];
+      if (!route) return;
+
+      setRoutes(allRoutes);
+      setSelectedRouteIndex(0);
+      setRouteSteps(route.steps);
+      routeStepsRef.current = route.steps;
+      activeRouteRef.current = route;
+      setCurrentStepIndex(0);
+      setRouteInfo({
+        distanceMeters: route.distanceMeters,
+        durationSeconds: route.durationSeconds,
+      });
+      mapRef.current?.updateRouteProgress(route.coordinates);
+      offRouteSinceRef.current = null;
+    } catch {
+      Alert.alert(
+        "Reroute failed",
+        "Could not find a new route. Continue toward destination."
+      );
+    } finally {
+      isReroutingRef.current = false;
+      setIsRerouting(false);
+    }
+  }, []);
+
   useEffect(() => {
     routeStepsRef.current = routeSteps;
   }, [routeSteps]);
+
+  useEffect(() => {
+    dropCoordsRef.current = dropPlace?.coordinates ?? null;
+  }, [dropPlace]);
 
   useEffect(() => {
     loadSavedPlaces().then(setSavedPlaces);
@@ -302,7 +374,8 @@ function IndiaExploreApp() {
   };
 
   const startTurnByTurn = async () => {
-    if (routeSteps.length === 0) return;
+    const route = activeRouteRef.current;
+    if (!route || routeSteps.length === 0) return;
 
     const { status } = await Location.requestForegroundPermissionsAsync();
     if (status !== "granted") {
@@ -310,16 +383,19 @@ function IndiaExploreApp() {
       return;
     }
 
+    resetVoiceNavigation();
+    arrivedRef.current = false;
+    offRouteSinceRef.current = null;
     setTurnByTurnActive(true);
+    setShowNavSteps(false);
     prevCoordsRef.current = userLocation;
 
     let initialHeading = userHeading;
-    if (userLocation && dropPlace) {
-      initialHeading = bearingBetween(userLocation, dropPlace.coordinates);
-    } else if (userLocation && routeStepsRef.current.length > 1) {
-      initialHeading = bearingBetween(
+    if (userLocation && route.coordinates.length > 1) {
+      initialHeading = navigationHeading(
         userLocation,
-        routeStepsRef.current[1].location
+        route.coordinates,
+        userHeading
       );
     }
     prevHeadingRef.current = initialHeading;
@@ -344,38 +420,87 @@ function IndiaExploreApp() {
     locationSub.current = await Location.watchPositionAsync(
       {
         accuracy: Location.Accuracy.BestForNavigation,
-        distanceInterval: 1,
-        timeInterval: 500,
+        distanceInterval: 2,
+        timeInterval: 1000,
       },
       (loc) => {
         const coords: [number, number] = [
           loc.coords.longitude,
           loc.coords.latitude,
         ];
+        const activeRoute = activeRouteRef.current;
+        const steps = routeStepsRef.current;
+        if (!activeRoute) return;
+
+        const destination = dropCoordsRef.current;
+        if (!destination) return;
+
+        const progress = computeNavigationProgress(
+          coords,
+          activeRoute,
+          steps,
+          destination
+        );
+        setNavProgress(progress);
+        setCurrentStepIndex(progress.stepIndex);
+
+        if (progress.hasArrived && !arrivedRef.current) {
+          arrivedRef.current = true;
+          announceArrival();
+        }
+
+        if (progress.isOffRoute && !progress.hasArrived) {
+          if (!offRouteSinceRef.current) {
+            offRouteSinceRef.current = Date.now();
+          } else if (Date.now() - offRouteSinceRef.current > 4000) {
+            rerouteFromCurrentPosition(coords);
+          }
+        } else {
+          offRouteSinceRef.current = null;
+        }
+
+        const routeHeading = navigationHeading(
+          progress.snappedLocation,
+          progress.remainingCoordinates,
+          prevHeadingRef.current
+        );
         const heading = resolveHeading(
           coords,
           compassHeadingRef.current ?? loc.coords.heading,
           prevCoordsRef.current,
-          prevHeadingRef.current,
+          routeHeading,
           loc.coords.speed
         );
 
         prevCoordsRef.current = coords;
         prevHeadingRef.current = heading;
 
-        setUserLocation(coords);
+        setUserLocation(progress.snappedLocation);
         setUserHeading(heading);
-        mapRef.current?.followNavigation(coords, heading);
+        mapRef.current?.followNavigation(progress.snappedLocation, heading);
+        mapRef.current?.updateRouteProgress(progress.remainingCoordinates);
 
-        setCurrentStepIndex((prev) => {
-          const next = findCurrentStepIndex(coords, routeStepsRef.current);
-          return next !== prev ? next : prev;
+        setRouteInfo({
+          distanceMeters: progress.remainingDistanceMeters,
+          durationSeconds: progress.remainingDurationSeconds,
         });
+
+        if (!progress.hasArrived && !isReroutingRef.current) {
+          updateVoiceGuidance(progress, steps);
+        }
       }
     );
 
-    if (userLocation) {
-      mapRef.current?.followNavigation(userLocation, initialHeading);
+    if (userLocation && route && dropCoordsRef.current) {
+      const progress = computeNavigationProgress(
+        userLocation,
+        route,
+        routeStepsRef.current,
+        dropCoordsRef.current
+      );
+      setNavProgress(progress);
+      mapRef.current?.followNavigation(progress.snappedLocation, initialHeading);
+      mapRef.current?.updateRouteProgress(progress.remainingCoordinates);
     }
   };
 
@@ -426,51 +551,65 @@ function IndiaExploreApp() {
   const isSaved = dropPlace ? isPlaceSaved(dropPlace.id, savedPlaces) : false;
 
   return (
-    <SafeAreaView style={styles.safe} edges={["top", "left", "right"]}>
+    <SafeAreaView
+      style={styles.safe}
+      edges={turnByTurnActive ? ["top"] : ["top", "left", "right"]}
+    >
       <StatusBar barStyle="dark-content" backgroundColor="#F8F7F4" />
 
-      <View style={styles.header}>
-        <View>
-          <Text style={styles.headerTitle}>📍 IndiaExplore</Text>
-          <Text style={styles.headerSub}>Search anywhere in India</Text>
+      {!turnByTurnActive && (
+        <View style={styles.header}>
+          <View>
+            <Text style={styles.headerTitle}>📍 IndiaExplore</Text>
+            <Text style={styles.headerSub}>Search anywhere in India</Text>
+          </View>
         </View>
-      </View>
+      )}
 
-      <LocationSearchPanel
-        pickupLabel={pickupLabel}
-        dropLabel={dropLabel}
-        useCurrentLocation={useCurrentLocation}
-        searching={searching}
-        navigating={navigating}
-        canRoute={Boolean(pickupCoords && dropPlace)}
-        routeSummary={routeSummary}
-        activeField={activeField}
-        pickupQuery={pickupQuery}
-        dropQuery={dropQuery}
-        results={searchResults}
-        onPickupFocus={() => {
-          setActiveField("pickup");
-          setPickupQuery(pickupLabel);
-        }}
-        onDropFocus={() => {
-          setActiveField("drop");
-          setDropQuery(dropLabel);
-        }}
-        onPickupChange={setPickupQuery}
-        onDropChange={setDropQuery}
-        onUseCurrentLocation={handleUseCurrentLocation}
-        onSelectPlace={handleSelectPlace}
-        onShowRoute={handleShowRoute}
-        onClearRoute={clearRoute}
-      />
+      {!turnByTurnActive && (
+        <LocationSearchPanel
+          pickupLabel={pickupLabel}
+          dropLabel={dropLabel}
+          useCurrentLocation={useCurrentLocation}
+          searching={searching}
+          navigating={navigating}
+          canRoute={Boolean(pickupCoords && dropPlace)}
+          routeSummary={routeSummary}
+          activeField={activeField}
+          pickupQuery={pickupQuery}
+          dropQuery={dropQuery}
+          results={searchResults}
+          onPickupFocus={() => {
+            setActiveField("pickup");
+            setPickupQuery(pickupLabel);
+          }}
+          onDropFocus={() => {
+            setActiveField("drop");
+            setDropQuery(dropLabel);
+          }}
+          onPickupChange={setPickupQuery}
+          onDropChange={setDropQuery}
+          onUseCurrentLocation={handleUseCurrentLocation}
+          onSelectPlace={handleSelectPlace}
+          onShowRoute={handleShowRoute}
+          onClearRoute={clearRoute}
+        />
+      )}
 
-      <SavedPlacesBar
-        places={savedPlaces}
-        onSelect={handleSavedPlaceSelect}
-        onRemove={handleRemoveSaved}
-      />
+      {!turnByTurnActive && (
+        <SavedPlacesBar
+          places={savedPlaces}
+          onSelect={handleSavedPlaceSelect}
+          onRemove={handleRemoveSaved}
+        />
+      )}
 
-      <View style={styles.mapContainer}>
+      <View
+        style={[
+          styles.mapContainer,
+          turnByTurnActive && styles.mapContainerNav,
+        ]}
+      >
         <MapWebView
           ref={mapRef}
           mapStyle={MAP_STYLE}
@@ -497,13 +636,29 @@ function IndiaExploreApp() {
         </TouchableOpacity>
 
         <RouteOptionsPanel
-          routes={routes}
+          routes={turnByTurnActive ? [] : routes}
           selectedIndex={selectedRouteIndex}
           onSelect={handleSelectRoute}
         />
+
+        {turnByTurnActive && navProgress && (
+          <NavigationBanner
+            steps={routeSteps}
+            currentStepIndex={navProgress.stepIndex}
+            distanceToManeuverMeters={navProgress.distanceToManeuverMeters}
+            remainingDistanceMeters={navProgress.remainingDistanceMeters}
+            remainingDurationSeconds={navProgress.remainingDurationSeconds}
+            etaMs={navProgress.etaMs}
+            isRerouting={isRerouting}
+            hasArrived={navProgress.hasArrived}
+            onStop={stopLocationWatch}
+            onExpandSteps={() => setShowNavSteps((v) => !v)}
+            showStepList={showNavSteps}
+          />
+        )}
       </View>
 
-      {routes.length > 0 ? (
+      {routes.length > 0 && !turnByTurnActive ? (
         <TurnByTurnPanel
           steps={routeSteps}
           currentStepIndex={currentStepIndex}
@@ -511,7 +666,7 @@ function IndiaExploreApp() {
           onStart={startTurnByTurn}
           onStop={stopLocationWatch}
         />
-      ) : (
+      ) : !turnByTurnActive ? (
         <Animated.View
           style={[
             styles.card,
@@ -558,7 +713,7 @@ function IndiaExploreApp() {
             </>
           )}
         </Animated.View>
-      )}
+      ) : null}
     </SafeAreaView>
   );
 }
@@ -584,6 +739,11 @@ const styles = StyleSheet.create({
     borderRadius: 20,
     overflow: "hidden",
     elevation: 6,
+  },
+  mapContainerNav: {
+    marginHorizontal: 0,
+    marginBottom: 0,
+    borderRadius: 0,
   },
   locationBtn: {
     position: "absolute",
