@@ -1,7 +1,7 @@
 {
   "expo": {
-    "name": "HydExplore",
-    "slug": "hydexplore",
+    "name": "Flipwi Maps",
+    "slug": "flipwi-maps",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
@@ -13,10 +13,10 @@
     },
     "ios": {
       "supportsTablet": false,
-      "bundleIdentifier": "com.hydexplore.app",
+      "bundleIdentifier": "com.flipwisolutions.maps",
       "infoPlist": {
-        "NSLocationWhenInUseUsageDescription": "HydExplore needs your location to show you on the map and help you navigate to nearby landmarks.",
-        "NSLocationAlwaysUsageDescription": "HydExplore needs your location to show you on the map."
+        "NSLocationWhenInUseUsageDescription": "Flipwi Maps needs your location to show you on the map and help you navigate.",
+        "NSLocationAlwaysUsageDescription": "Flipwi Maps needs your location for turn-by-turn navigation."
       }
     },
     "android": {
@@ -24,7 +24,7 @@
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#F8F7F4"
       },
-      "package": "com.hydexplore.app",
+      "package": "com.flipwisolutions.maps",
       "permissions": [
         "ACCESS_FINE_LOCATION",
         "ACCESS_COARSE_LOCATION"
@@ -34,7 +34,7 @@
       [
         "expo-location",
         {
-          "locationAlwaysAndWhenInUsePermission": "HydExplore needs location access to show you on the map."
+          "locationAlwaysAndWhenInUsePermission": "Flipwi Maps needs location access to show you on the map."
         }
       ]
     ],

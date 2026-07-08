@@ -8,6 +8,7 @@ import React, {
 } from "react";
 import { Image, StyleSheet } from "react-native";
 import { WebView, type WebViewMessageEvent } from "react-native-webview";
+import { OSM_RASTER_STYLE, type MapStyleSpec } from "../lib/osm-raster-style";
 
 const NAV_ARROW_URI = Image.resolveAssetSource(
   require("../assets/nav-arrow.png")
@@ -25,13 +26,22 @@ export interface MapWebViewRef {
   showRoute: (coordinates: [number, number][], color: string) => void;
   showRoutes: (routes: [number, number][][], selectedIndex: number) => void;
   clearRoute: () => void;
-  followNavigation: (coordinates: [number, number], heading: number) => void;
+  followNavigation: (
+    coordinates: [number, number],
+    heading: number,
+    northUp?: boolean
+  ) => void;
   exitNavigationMode: () => void;
   updateRouteProgress: (remaining: [number, number][]) => void;
+  setNorthUp: (
+    coordinates?: [number, number],
+    heading?: number
+  ) => void;
 }
 
 interface MapWebViewProps {
-  mapStyle: string;
+  mapStyle: MapStyleSpec;
+  mapStyleFallback?: MapStyleSpec;
   center: [number, number];
   zoom: number;
   minZoom?: number;
@@ -41,6 +51,7 @@ interface MapWebViewProps {
   userLocation?: [number, number] | null;
   userHeading?: number;
   navigationActive?: boolean;
+  northUp?: boolean;
   pickupLocation?: [number, number] | null;
   dropLocation?: [number, number] | null;
   onMarkerPress: (id: string) => void;
@@ -48,7 +59,8 @@ interface MapWebViewProps {
 }
 
 function buildMapHtml(
-  mapStyle: string,
+  mapStyle: MapStyleSpec,
+  mapStyleFallback: MapStyleSpec | undefined,
   center: [number, number],
   zoom: number,
   markers: MapMarker[],
@@ -58,6 +70,7 @@ function buildMapHtml(
 ) {
   const payload = JSON.stringify({
     mapStyle,
+    mapStyleFallback: mapStyleFallback ?? OSM_RASTER_STYLE,
     center,
     zoom,
     markers,
@@ -190,6 +203,21 @@ function buildMapHtml(
       map.flyTo({ center: [lng, lat], zoom: zoom || 14, duration: 600 });
     };
 
+    let northUpMode = false;
+
+    function applyNavMarkerRotation(heading) {
+      if (!userMarker || !navMode) return;
+      if (northUpMode) {
+        userMarker.setRotationAlignment("map");
+        userMarker.setPitchAlignment("map");
+        userMarker.setRotation(heading || 0);
+      } else {
+        userMarker.setRotationAlignment("viewport");
+        userMarker.setPitchAlignment("viewport");
+        userMarker.setRotation(0);
+      }
+    }
+
     function buildUserElement(isNav) {
       if (isNav) {
         const wrap = document.createElement("div");
@@ -248,8 +276,9 @@ function buildMapHtml(
       applyUserMarkerStyle(nextNavMode);
     };
 
-    window.followNavigation = function(lng, lat, heading) {
+    window.followNavigation = function(lng, lat, heading, northUp) {
       if (!map) return;
+      if (typeof northUp === "boolean") northUpMode = northUp;
       userHeading = heading || 0;
       navMode = true;
 
@@ -258,7 +287,20 @@ function buildMapHtml(
       } else {
         applyUserMarkerStyle(true);
         userMarker.setLngLat([lng, lat]);
-        userMarker.setRotation(0);
+      }
+      applyNavMarkerRotation(userHeading);
+
+      if (northUpMode) {
+        map.easeTo({
+          center: [lng, lat],
+          bearing: 0,
+          pitch: 0,
+          zoom: Math.max(map.getZoom(), 17),
+          padding: { top: 24, bottom: 100, left: 16, right: 16 },
+          duration: 320,
+          essential: true,
+        });
+        return;
       }
 
       const lookMeters = 120;
@@ -278,7 +320,18 @@ function buildMapHtml(
       });
     };
 
+    window.setNorthUp = function(lng, lat, heading) {
+      northUpMode = true;
+      if (lng != null && lat != null) {
+        window.followNavigation(lng, lat, heading || 0, true);
+      } else if (map) {
+        map.easeTo({ bearing: 0, pitch: 0, duration: 450, essential: true });
+        applyNavMarkerRotation(heading || userHeading);
+      }
+    };
+
     window.exitNavigationMode = function() {
+      northUpMode = false;
       navMode = false;
       if (map) {
         map.easeTo({ bearing: 0, pitch: 0, duration: 500 });
@@ -471,28 +524,46 @@ function buildMapHtml(
       clearAllRoutes();
     };
 
-    map = new maplibregl.Map({
-      container: "map",
-      style: CONFIG.mapStyle,
-      center: CONFIG.center,
-      zoom: CONFIG.zoom,
-      minZoom: CONFIG.minZoom,
-      maxZoom: CONFIG.maxZoom,
-      attributionControl: true,
-    });
+    let styleFallbackApplied = false;
 
-    map.addControl(new maplibregl.NavigationControl({ showCompass: true }), "top-right");
-
-    map.on("load", () => {
-      CONFIG.markers.forEach((loc) => {
-        new maplibregl.Marker({ element: renderMarker(loc), anchor: "bottom" })
-          .setLngLat(loc.coordinates)
-          .addTo(map);
+    function initMap(style) {
+      if (map) {
+        map.remove();
+        map = null;
+      }
+      map = new maplibregl.Map({
+        container: "map",
+        style: style,
+        center: CONFIG.center,
+        zoom: CONFIG.zoom,
+        minZoom: CONFIG.minZoom,
+        maxZoom: CONFIG.maxZoom,
+        attributionControl: true,
       });
-      post({ type: "ready" });
-    });
 
-    map.on("click", () => post({ type: "mapPress" }));
+      map.addControl(new maplibregl.NavigationControl({ showCompass: true }), "top-right");
+
+      map.on("load", () => {
+        CONFIG.markers.forEach((loc) => {
+          new maplibregl.Marker({ element: renderMarker(loc), anchor: "bottom" })
+            .setLngLat(loc.coordinates)
+            .addTo(map);
+        });
+        post({ type: "ready" });
+      });
+
+      map.on("error", (e) => {
+        if (styleFallbackApplied) return;
+        const msg = (e && e.error && e.error.message) || "";
+        if (msg.indexOf("tile") === -1 && msg.indexOf("style") === -1 && msg.indexOf("glyph") === -1) return;
+        styleFallbackApplied = true;
+        initMap(CONFIG.mapStyleFallback);
+      });
+
+      map.on("click", () => post({ type: "mapPress" }));
+    }
+
+    initMap(CONFIG.mapStyle);
   </script>
 </body>
 </html>`;
@@ -501,6 +572,7 @@ function buildMapHtml(
 const MapWebView = forwardRef<MapWebViewRef, MapWebViewProps>(function MapWebView(
   {
     mapStyle,
+    mapStyleFallback,
     center,
     zoom,
     minZoom = 3,
@@ -510,6 +582,7 @@ const MapWebView = forwardRef<MapWebViewRef, MapWebViewProps>(function MapWebVie
     userLocation,
     userHeading = 0,
     navigationActive = false,
+    northUp = false,
     pickupLocation,
     dropLocation,
     onMarkerPress,
@@ -524,6 +597,7 @@ const MapWebView = forwardRef<MapWebViewRef, MapWebViewProps>(function MapWebVie
     () =>
       buildMapHtml(
         mapStyle,
+        mapStyleFallback,
         center,
         zoom,
         markers,
@@ -531,7 +605,7 @@ const MapWebView = forwardRef<MapWebViewRef, MapWebViewProps>(function MapWebVie
         maxZoom,
         NAV_ARROW_URI
       ),
-    [mapStyle, center, zoom, markers, minZoom, maxZoom]
+    [mapStyle, mapStyleFallback, center, zoom, markers, minZoom, maxZoom]
   );
 
   const runInMap = useCallback((script: string) => {
@@ -556,9 +630,9 @@ const MapWebView = forwardRef<MapWebViewRef, MapWebViewProps>(function MapWebVie
     clearRoute: () => {
       runInMap("window.clearRoute()");
     },
-    followNavigation: (coordinates, heading) => {
+    followNavigation: (coordinates, heading, northUpMode = false) => {
       runInMap(
-        `window.followNavigation(${coordinates[0]}, ${coordinates[1]}, ${heading})`
+        `window.followNavigation(${coordinates[0]}, ${coordinates[1]}, ${heading}, ${northUpMode})`
       );
     },
     exitNavigationMode: () => {
@@ -568,6 +642,15 @@ const MapWebView = forwardRef<MapWebViewRef, MapWebViewProps>(function MapWebVie
       runInMap(
         `window.updateRouteProgress(${JSON.stringify(remaining)})`
       );
+    },
+    setNorthUp: (coordinates, heading) => {
+      if (coordinates) {
+        runInMap(
+          `window.setNorthUp(${coordinates[0]}, ${coordinates[1]}, ${heading ?? 0})`
+        );
+      } else {
+        runInMap(`window.setNorthUp(null, null, ${heading ?? 0})`);
+      }
     },
   }));
 
@@ -579,14 +662,14 @@ const MapWebView = forwardRef<MapWebViewRef, MapWebViewProps>(function MapWebVie
     if (!userLocation) return;
     if (navigationActive) {
       runInMap(
-        `window.followNavigation(${userLocation[0]}, ${userLocation[1]}, ${userHeading})`
+        `window.followNavigation(${userLocation[0]}, ${userLocation[1]}, ${userHeading}, ${northUp})`
       );
       return;
     }
     runInMap(
       `window.setUserLocation(${userLocation[0]}, ${userLocation[1]}, ${userHeading}, false)`
     );
-  }, [userLocation, userHeading, navigationActive, runInMap]);
+  }, [userLocation, userHeading, navigationActive, northUp, runInMap]);
 
   useEffect(() => {
     if (!pickupLocation) {
@@ -623,7 +706,7 @@ const MapWebView = forwardRef<MapWebViewRef, MapWebViewProps>(function MapWebVie
           if (userLocation) {
             if (navigationActive) {
               runInMap(
-                `window.followNavigation(${userLocation[0]}, ${userLocation[1]}, ${userHeading})`
+                `window.followNavigation(${userLocation[0]}, ${userLocation[1]}, ${userHeading}, ${northUp})`
               );
             } else {
               runInMap(
@@ -654,13 +737,13 @@ const MapWebView = forwardRef<MapWebViewRef, MapWebViewProps>(function MapWebVie
         // ignore malformed messages
       }
     },
-    [onMarkerPress, onMapPress, runInMap, selectedId, userLocation, userHeading, navigationActive, pickupLocation, dropLocation]
+    [onMarkerPress, onMapPress, runInMap, selectedId, userLocation, userHeading, navigationActive, northUp, pickupLocation, dropLocation]
   );
 
   return (
     <WebView
       ref={webRef}
-      source={{ html, baseUrl: "https://localhost" }}
+      source={{ html, baseUrl: "https://tile.openstreetmap.org/" }}
       style={styles.map}
       onMessage={onMessage}
       originWhitelist={["*"]}
@@ -671,6 +754,8 @@ const MapWebView = forwardRef<MapWebViewRef, MapWebViewProps>(function MapWebVie
       bounces={false}
       overScrollMode="never"
       setSupportMultipleWindows={false}
+      mixedContentMode="always"
+      androidLayerType="hardware"
     />
   );
 });

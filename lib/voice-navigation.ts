@@ -9,6 +9,16 @@ import { voiceInstruction } from "./maneuvers";
 
 const spokenCues = new Set<string>();
 let lastStepAnnounced = -1;
+let voiceEnabled = true;
+
+export function setVoiceEnabled(enabled: boolean): void {
+  voiceEnabled = enabled;
+  if (!enabled) Speech.stop();
+}
+
+export function isVoiceEnabled(): boolean {
+  return voiceEnabled;
+}
 
 export function resetVoiceNavigation(): void {
   Speech.stop();
@@ -17,11 +27,13 @@ export function resetVoiceNavigation(): void {
 }
 
 export function announceRerouting(): void {
+  if (!voiceEnabled) return;
   Speech.stop();
   Speech.speak("Rerouting", { language: "en-IN", rate: 0.95 });
 }
 
 export function announceArrival(): void {
+  if (!voiceEnabled) return;
   Speech.stop();
   Speech.speak("You have arrived at your destination", {
     language: "en-IN",
@@ -34,7 +46,7 @@ export function updateVoiceGuidance(
   progress: NavigationProgress,
   steps: RouteStep[]
 ): void {
-  if (progress.hasArrived) return;
+  if (!voiceEnabled || progress.hasArrived) return;
 
   const step = steps[progress.stepIndex];
   if (!step) return;

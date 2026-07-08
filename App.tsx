@@ -18,19 +18,22 @@ import LocationSearchPanel, {
 import RouteOptionsPanel from "./components/RouteOptionsPanel";
 import SavedPlacesBar from "./components/SavedPlacesBar";
 import TurnByTurnPanel from "./components/TurnByTurnPanel";
-import NavigationBanner from "./components/NavigationBanner";
+import NavigationUI from "./components/NavigationUI";
 import {
   fetchDrivingRoutes,
   formatDistance,
   formatDuration,
+  isValidRouteCoord,
   type RouteResult,
   type RouteStep,
 } from "./lib/routing";
 import {
   reverseGeocode,
   searchPlaces,
+  getLocalPlaceCount,
   type SearchPlace,
 } from "./lib/geocoding";
+import { isPlatformConfigured } from "./lib/api-config";
 import {
   loadSavedPlaces,
   savePlace,
@@ -48,26 +51,32 @@ import {
   updateVoiceGuidance,
   announceRerouting,
   announceArrival,
+  setVoiceEnabled,
 } from "./lib/voice-navigation";
 import { INDIA_CENTER, INDIA_ZOOM } from "./lib/india-places";
+import { getRegion, type SearchRegion } from "./lib/regions";
+import { ensureIndiaIndex, ensureWorldIndex } from "./lib/place-index";
 import {
   MAP_STYLE,
+  MAP_STYLE_FALLBACK,
   MAP_MIN_ZOOM,
   MAP_MAX_ZOOM,
   zoomForPlace,
 } from "./lib/map-config";
+import { colors, shadow } from "./lib/theme";
 
 export default function App() {
   return (
     <SafeAreaProvider>
-      <IndiaExploreApp />
+      <FlipwiMapsApp />
     </SafeAreaProvider>
   );
 }
 
-function IndiaExploreApp() {
+function FlipwiMapsApp() {
   const mapRef = useRef<MapWebViewRef>(null);
   const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const fieldBlurTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const locationSub = useRef<Location.LocationSubscription | null>(null);
   const headingSub = useRef<Location.LocationSubscription | null>(null);
   const prevCoordsRef = useRef<[number, number] | null>(null);
@@ -80,6 +89,7 @@ function IndiaExploreApp() {
   const offRouteSinceRef = useRef<number | null>(null);
   const arrivedRef = useRef(false);
   const isReroutingRef = useRef(false);
+  const northUpRef = useRef(false);
 
   const [userLocation, setUserLocation] = useState<[number, number] | null>(null);
   const [userHeading, setUserHeading] = useState(0);
@@ -88,7 +98,7 @@ function IndiaExploreApp() {
   const [useCurrentLocation, setUseCurrentLocation] = useState(true);
   const [pickupPlace, setPickupPlace] = useState<SearchPlace | null>(null);
   const [dropPlace, setDropPlace] = useState<SearchPlace | null>(null);
-  const [pickupLabel, setPickupLabel] = useState("My location");
+  const [pickupLabel, setPickupLabel] = useState("Locating…");
   const [dropLabel, setDropLabel] = useState("");
 
   const [activeField, setActiveField] = useState<SearchField | null>(null);
@@ -96,6 +106,8 @@ function IndiaExploreApp() {
   const [dropQuery, setDropQuery] = useState("");
   const [searchResults, setSearchResults] = useState<SearchPlace[]>([]);
   const [searching, setSearching] = useState(false);
+  const [searchRegion, setSearchRegion] = useState<SearchRegion>("india");
+  const [localPlaceCount, setLocalPlaceCount] = useState(getLocalPlaceCount("india"));
 
   const [savedPlaces, setSavedPlaces] = useState<SearchPlace[]>([]);
   const [routes, setRoutes] = useState<RouteResult[]>([]);
@@ -105,7 +117,9 @@ function IndiaExploreApp() {
   const [turnByTurnActive, setTurnByTurnActive] = useState(false);
   const [navProgress, setNavProgress] = useState<NavigationProgress | null>(null);
   const [isRerouting, setIsRerouting] = useState(false);
-  const [showNavSteps, setShowNavSteps] = useState(false);
+  const [voiceEnabled, setVoiceEnabledState] = useState(true);
+  const [northUp, setNorthUp] = useState(false);
+  const [showNavRoutes, setShowNavRoutes] = useState(false);
 
   const [routeInfo, setRouteInfo] = useState<{
     distanceMeters: number;
@@ -118,6 +132,16 @@ function IndiaExploreApp() {
     ? userLocation
     : pickupPlace?.coordinates ?? null;
 
+  const updatePickupLabel = useCallback(async (coords: [number, number]) => {
+    setPickupLabel("Locating…");
+    try {
+      const label = await reverseGeocode(coords);
+      setPickupLabel(label.replace(/\n/g, ", "));
+    } catch {
+      setPickupLabel("Current location");
+    }
+  }, []);
+
   const stopLocationWatch = useCallback(() => {
     locationSub.current?.remove();
     locationSub.current = null;
@@ -129,7 +153,9 @@ function IndiaExploreApp() {
     offRouteSinceRef.current = null;
     setNavProgress(null);
     setIsRerouting(false);
-    setShowNavSteps(false);
+    setNorthUp(false);
+    northUpRef.current = false;
+    setShowNavRoutes(false);
     setTurnByTurnActive(false);
     mapRef.current?.exitNavigationMode();
   }, []);
@@ -217,6 +243,12 @@ function IndiaExploreApp() {
   }, []);
 
   useEffect(() => {
+    ensureIndiaIndex().then(() => {
+      setLocalPlaceCount(getLocalPlaceCount("india"));
+    });
+  }, []);
+
+  useEffect(() => {
     (async () => {
       const { status } = await Location.requestForegroundPermissionsAsync();
       if (status !== "granted") return;
@@ -229,19 +261,15 @@ function IndiaExploreApp() {
       ];
       setUserLocation(coords);
       mapRef.current?.flyTo(coords, 12);
-      try {
-        const label = await reverseGeocode(coords);
-        setPickupLabel(label);
-      } catch {
-        setPickupLabel("My location");
-      }
+      await updatePickupLabel(coords);
     })();
-  }, []);
+  }, [updatePickupLabel]);
 
   useEffect(() => {
     return () => {
       locationSub.current?.remove();
       headingSub.current?.remove();
+      if (fieldBlurTimer.current) clearTimeout(fieldBlurTimer.current);
     };
   }, []);
 
@@ -261,7 +289,7 @@ function IndiaExploreApp() {
     }
 
     const query = activeField === "pickup" ? pickupQuery : dropQuery;
-    if (query.trim().length < 2) {
+    if (query.trim().length < 1) {
       setSearchResults([]);
       return;
     }
@@ -272,6 +300,8 @@ function IndiaExploreApp() {
       try {
         const results = await searchPlaces(query, {
           proximity: userLocation ?? undefined,
+          region: searchRegion,
+          limit: 30,
         });
         setSearchResults(results);
       } catch {
@@ -279,39 +309,96 @@ function IndiaExploreApp() {
       } finally {
         setSearching(false);
       }
-    }, 350);
+    }, searchRegion === "world" ? 450 : query.trim().length < 4 ? 280 : 380);
 
     return () => {
       if (searchTimer.current) clearTimeout(searchTimer.current);
     };
-  }, [activeField, pickupQuery, dropQuery, userLocation]);
+  }, [activeField, pickupQuery, dropQuery, userLocation, searchRegion]);
+
+  const handleSearchRegionChange = useCallback(async (region: SearchRegion) => {
+    setSearchRegion(region);
+    setSearchResults([]);
+    if (!isPlatformConfigured()) {
+      setLocalPlaceCount(getLocalPlaceCount(region));
+      if (region === "world") {
+        await ensureWorldIndex();
+        setLocalPlaceCount(getLocalPlaceCount("world"));
+      }
+    }
+    const cfg = getRegion(region);
+    mapRef.current?.flyTo(cfg.center, cfg.zoom);
+  }, []);
 
   const flyToPlace = (place: SearchPlace) => {
     mapRef.current?.flyTo(place.coordinates, zoomForPlace(place.type));
   };
 
+  const normalizePlace = (place: SearchPlace): SearchPlace => ({
+    ...place,
+    name: place.name?.trim() || place.subtitle?.split(",")[0]?.trim() || "Selected place",
+    subtitle: place.subtitle?.trim() || "OpenStreetMap",
+  });
+
+  const resolveDropFromQuery = useCallback(
+    async (query: string): Promise<SearchPlace | null> => {
+      const trimmed = query.trim();
+      if (trimmed.length < 2) return null;
+      const results = await searchPlaces(trimmed, {
+        proximity: userLocation ?? undefined,
+        region: searchRegion,
+      });
+      return results[0] ? normalizePlace(results[0]) : null;
+    },
+    [userLocation, searchRegion]
+  );
+
   const setDropFromPlace = (place: SearchPlace) => {
+    const normalized = normalizePlace(place);
+    if (
+      !normalized.coordinates ||
+      normalized.coordinates.length < 2 ||
+      !Number.isFinite(normalized.coordinates[0]) ||
+      !Number.isFinite(normalized.coordinates[1])
+    ) {
+      Alert.alert("Invalid place", "Could not use that location. Try another result.");
+      return;
+    }
     clearRoute();
-    setDropPlace(place);
-    setDropLabel(place.name);
-    setDropQuery("");
+    setDropPlace(normalized);
+    setDropLabel(normalized.name);
+    setDropQuery(normalized.name);
     setActiveField(null);
     setSearchResults([]);
-    flyToPlace(place);
+    flyToPlace(normalized);
+  };
+
+  const handleFieldBlur = (field: SearchField) => {
+    if (fieldBlurTimer.current) clearTimeout(fieldBlurTimer.current);
+    fieldBlurTimer.current = setTimeout(() => {
+      setActiveField((current) => (current === field ? null : current));
+    }, 250);
   };
 
   const handleSelectPlace = (place: SearchPlace, field: SearchField) => {
+    if (fieldBlurTimer.current) {
+      clearTimeout(fieldBlurTimer.current);
+      fieldBlurTimer.current = null;
+    }
     clearRoute();
+    const normalized = normalizePlace(place);
     if (field === "pickup") {
       setUseCurrentLocation(false);
-      setPickupPlace(place);
-      setPickupLabel(place.name);
-      setPickupQuery("");
-      flyToPlace(place);
+      setPickupPlace(normalized);
+      setPickupLabel(normalized.name);
+      setPickupQuery(normalized.name);
+      flyToPlace(normalized);
     } else {
-      setDropFromPlace(place);
+      setDropFromPlace(normalized);
+      return;
     }
     setActiveField(null);
+    setSearchResults([]);
   };
 
   const handleUseCurrentLocation = async () => {
@@ -322,13 +409,7 @@ function IndiaExploreApp() {
     setActiveField(null);
 
     if (userLocation) {
-      setPickupLabel("My location");
-      try {
-        const label = await reverseGeocode(userLocation);
-        setPickupLabel(label);
-      } catch {
-        setPickupLabel("My location");
-      }
+      await updatePickupLabel(userLocation);
       mapRef.current?.flyTo(userLocation, 14);
       return;
     }
@@ -346,23 +427,64 @@ function IndiaExploreApp() {
     ];
     setUserLocation(coords);
     setLocationPermission(true);
-    setPickupLabel("My location");
     mapRef.current?.flyTo(coords, 14);
+    await updatePickupLabel(coords);
   };
 
   const handleShowRoute = async () => {
-    if (!pickupCoords || !dropPlace || navigating) return;
+    if (navigating) return;
+
+    if (!pickupCoords) {
+      Alert.alert(
+        "Pickup location needed",
+        "Allow location access or set a pickup point before routing."
+      );
+      return;
+    }
 
     setNavigating(true);
     try {
+      let destination = dropPlace;
+      if (!destination) {
+        const queryText = dropQuery.trim() || dropLabel.trim();
+        destination = await resolveDropFromQuery(queryText);
+        if (!destination) {
+          Alert.alert(
+            "Destination not found",
+            "Type a place name and pick from the list, or try a different search."
+          );
+          return;
+        }
+        setDropPlace(destination);
+        setDropLabel(destination.name);
+        setDropQuery(destination.name);
+        setActiveField(null);
+        setSearchResults([]);
+        flyToPlace(destination);
+      }
+
+      if (!isValidRouteCoord(destination.coordinates)) {
+        Alert.alert(
+          "Invalid destination",
+          "This place has no valid map coordinates. Pick a different search result."
+        );
+        return;
+      }
+
       const allRoutes = await fetchDrivingRoutes(
         pickupCoords,
-        dropPlace.coordinates
+        destination.coordinates
       );
+      if (!allRoutes.length) {
+        Alert.alert("Route unavailable", "No driving route could be calculated.");
+        return;
+      }
       setRoutes(allRoutes);
       applySelectedRoute(0, allRoutes);
-    } catch {
-      Alert.alert("Route unavailable", "Could not load driving routes. Try again.");
+    } catch (err) {
+      const msg =
+        err instanceof Error ? err.message : "Could not load driving routes.";
+      Alert.alert("Route unavailable", msg);
     } finally {
       setNavigating(false);
     }
@@ -384,10 +506,14 @@ function IndiaExploreApp() {
     }
 
     resetVoiceNavigation();
+    setVoiceEnabledState(true);
+    setVoiceEnabled(true);
     arrivedRef.current = false;
     offRouteSinceRef.current = null;
     setTurnByTurnActive(true);
-    setShowNavSteps(false);
+    setNorthUp(false);
+    northUpRef.current = false;
+    setShowNavRoutes(false);
     prevCoordsRef.current = userLocation;
 
     let initialHeading = userHeading;
@@ -477,7 +603,6 @@ function IndiaExploreApp() {
 
         setUserLocation(progress.snappedLocation);
         setUserHeading(heading);
-        mapRef.current?.followNavigation(progress.snappedLocation, heading);
         mapRef.current?.updateRouteProgress(progress.remainingCoordinates);
 
         setRouteInfo({
@@ -488,6 +613,12 @@ function IndiaExploreApp() {
         if (!progress.hasArrived && !isReroutingRef.current) {
           updateVoiceGuidance(progress, steps);
         }
+
+        mapRef.current?.followNavigation(
+          progress.snappedLocation,
+          heading,
+          northUpRef.current
+        );
       }
     );
 
@@ -499,7 +630,11 @@ function IndiaExploreApp() {
         dropCoordsRef.current
       );
       setNavProgress(progress);
-      mapRef.current?.followNavigation(progress.snappedLocation, initialHeading);
+      mapRef.current?.followNavigation(
+        progress.snappedLocation,
+        initialHeading,
+        northUpRef.current
+      );
       mapRef.current?.updateRouteProgress(progress.remainingCoordinates);
     }
   };
@@ -539,6 +674,29 @@ function IndiaExploreApp() {
     setSavedPlaces(updated);
   };
 
+  const handleToggleVoice = useCallback(() => {
+    setVoiceEnabledState((prev) => {
+      const next = !prev;
+      setVoiceEnabled(next);
+      return next;
+    });
+  }, []);
+
+  const handleToggleCompass = useCallback(() => {
+    setNorthUp((prev) => {
+      const next = !prev;
+      northUpRef.current = next;
+      if (userLocation) {
+        if (next) {
+          mapRef.current?.setNorthUp(userLocation, userHeading);
+        } else {
+          mapRef.current?.followNavigation(userLocation, userHeading, false);
+        }
+      }
+      return next;
+    });
+  }, [userLocation, userHeading]);
+
   const routeSummary = routeInfo
     ? `${formatDistance(routeInfo.distanceMeters)} · ${formatDuration(routeInfo.durationSeconds)}`
     : null;
@@ -552,16 +710,25 @@ function IndiaExploreApp() {
 
   return (
     <SafeAreaView
-      style={styles.safe}
+      style={[styles.safe, turnByTurnActive && styles.safeNav]}
       edges={turnByTurnActive ? ["top"] : ["top", "left", "right"]}
     >
-      <StatusBar barStyle="dark-content" backgroundColor="#F8F7F4" />
+      <StatusBar barStyle="dark-content" backgroundColor={colors.bg} />
 
       {!turnByTurnActive && (
         <View style={styles.header}>
-          <View>
-            <Text style={styles.headerTitle}>📍 IndiaExplore</Text>
-            <Text style={styles.headerSub}>Search anywhere in India</Text>
+          <View style={styles.headerBadge}>
+            <Text style={styles.headerBadgeText}>FLIPWI</Text>
+          </View>
+          <View style={styles.headerTextBlock}>
+            <Text style={styles.headerTitle}>Maps</Text>
+            <Text style={styles.headerSub}>
+              {isPlatformConfigured()
+                ? "Live search · routing · navigation"
+                : searchRegion === "india"
+                  ? `${localPlaceCount.toLocaleString()}+ places across India`
+                  : `${localPlaceCount.toLocaleString()}+ cities worldwide`}
+            </Text>
           </View>
         </View>
       )}
@@ -573,20 +740,30 @@ function IndiaExploreApp() {
           useCurrentLocation={useCurrentLocation}
           searching={searching}
           navigating={navigating}
-          canRoute={Boolean(pickupCoords && dropPlace)}
+          canRoute={Boolean(
+            pickupCoords &&
+              (dropPlace || dropQuery.trim().length >= 2 || dropLabel.trim().length >= 2)
+          )}
+          searchRegion={searchRegion}
+          onSearchRegionChange={handleSearchRegionChange}
+          localPlaceCount={localPlaceCount}
           routeSummary={routeSummary}
           activeField={activeField}
           pickupQuery={pickupQuery}
           dropQuery={dropQuery}
           results={searchResults}
           onPickupFocus={() => {
+            if (fieldBlurTimer.current) clearTimeout(fieldBlurTimer.current);
             setActiveField("pickup");
-            setPickupQuery(pickupLabel);
+            setPickupQuery(pickupLabel || pickupQuery);
           }}
           onDropFocus={() => {
+            if (fieldBlurTimer.current) clearTimeout(fieldBlurTimer.current);
             setActiveField("drop");
-            setDropQuery(dropLabel);
+            setDropQuery(dropLabel || dropQuery);
           }}
+          onPickupBlur={() => handleFieldBlur("pickup")}
+          onDropBlur={() => handleFieldBlur("drop")}
           onPickupChange={setPickupQuery}
           onDropChange={setDropQuery}
           onUseCurrentLocation={handleUseCurrentLocation}
@@ -613,6 +790,7 @@ function IndiaExploreApp() {
         <MapWebView
           ref={mapRef}
           mapStyle={MAP_STYLE}
+          mapStyleFallback={MAP_STYLE_FALLBACK}
           center={INDIA_CENTER}
           zoom={INDIA_ZOOM}
           minZoom={MAP_MIN_ZOOM}
@@ -621,14 +799,21 @@ function IndiaExploreApp() {
           userLocation={locationPermission ? userLocation : null}
           userHeading={userHeading}
           navigationActive={turnByTurnActive}
+          northUp={northUp}
           pickupLocation={turnByTurnActive ? null : pickupCoords}
           dropLocation={dropPlace?.coordinates ?? null}
           onMarkerPress={() => {}}
-          onMapPress={() => setActiveField(null)}
+          onMapPress={() => {
+            if (fieldBlurTimer.current) clearTimeout(fieldBlurTimer.current);
+            setActiveField(null);
+          }}
         />
 
         <TouchableOpacity
-          style={styles.locationBtn}
+          style={[
+            styles.locationBtn,
+            turnByTurnActive && styles.locationBtnHidden,
+          ]}
           onPress={handleMyLocation}
           activeOpacity={0.8}
         >
@@ -636,27 +821,37 @@ function IndiaExploreApp() {
         </TouchableOpacity>
 
         <RouteOptionsPanel
-          routes={turnByTurnActive ? [] : routes}
+          routes={turnByTurnActive && !showNavRoutes ? [] : routes}
           selectedIndex={selectedRouteIndex}
           onSelect={handleSelectRoute}
+          navMode={turnByTurnActive && showNavRoutes}
         />
-
-        {turnByTurnActive && navProgress && (
-          <NavigationBanner
-            steps={routeSteps}
-            currentStepIndex={navProgress.stepIndex}
-            distanceToManeuverMeters={navProgress.distanceToManeuverMeters}
-            remainingDistanceMeters={navProgress.remainingDistanceMeters}
-            remainingDurationSeconds={navProgress.remainingDurationSeconds}
-            etaMs={navProgress.etaMs}
-            isRerouting={isRerouting}
-            hasArrived={navProgress.hasArrived}
-            onStop={stopLocationWatch}
-            onExpandSteps={() => setShowNavSteps((v) => !v)}
-            showStepList={showNavSteps}
-          />
-        )}
       </View>
+
+      {turnByTurnActive && navProgress && (
+        <NavigationUI
+          steps={routeSteps}
+          currentStepIndex={navProgress.stepIndex}
+          distanceToManeuverMeters={navProgress.distanceToManeuverMeters}
+          remainingDistanceMeters={navProgress.remainingDistanceMeters}
+          remainingDurationSeconds={navProgress.remainingDurationSeconds}
+          etaMs={navProgress.etaMs}
+          isRerouting={isRerouting}
+          hasArrived={navProgress.hasArrived}
+          voiceEnabled={voiceEnabled}
+          northUp={northUp}
+          mapBearing={northUp ? 0 : userHeading}
+          userHeading={userHeading}
+          onStop={stopLocationWatch}
+          onToggleVoice={handleToggleVoice}
+          onToggleCompass={handleToggleCompass}
+          onShowRoutes={
+            routes.length > 1
+              ? () => setShowNavRoutes((v) => !v)
+              : undefined
+          }
+        />
+      )}
 
       {routes.length > 0 && !turnByTurnActive ? (
         <TurnByTurnPanel
@@ -719,26 +914,50 @@ function IndiaExploreApp() {
 }
 
 const styles = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: "#F8F7F4" },
+  safe: { flex: 1, backgroundColor: colors.bg },
+  safeNav: { backgroundColor: colors.surface },
   header: {
-    paddingHorizontal: 20,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    paddingHorizontal: 18,
     paddingTop: Platform.OS === "android" ? 8 : 4,
-    paddingBottom: 6,
+    paddingBottom: 8,
   },
+  headerBadge: {
+    backgroundColor: colors.primary,
+    borderRadius: 12,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    ...shadow.sm,
+  },
+  headerBadgeText: {
+    fontSize: 11,
+    fontWeight: "900",
+    color: "#fff",
+    letterSpacing: 1.2,
+  },
+  headerTextBlock: { flex: 1 },
   headerTitle: {
-    fontSize: 22,
-    fontWeight: "700",
-    color: "#1A1A2E",
-    letterSpacing: -0.4,
+    fontSize: 26,
+    fontWeight: "800",
+    color: colors.text,
+    letterSpacing: -0.6,
+    lineHeight: 30,
   },
-  headerSub: { fontSize: 12, color: "#7C7C8A", marginTop: 1 },
+  headerSub: {
+    fontSize: 13,
+    color: colors.textSecondary,
+    marginTop: 2,
+    fontWeight: "500",
+  },
   mapContainer: {
     flex: 1,
-    marginHorizontal: 12,
-    marginBottom: 8,
-    borderRadius: 20,
+    marginHorizontal: 14,
+    marginBottom: 10,
+    borderRadius: 22,
     overflow: "hidden",
-    elevation: 6,
+    ...shadow.md,
   },
   mapContainerNav: {
     marginHorizontal: 0,
@@ -749,31 +968,34 @@ const styles = StyleSheet.create({
     position: "absolute",
     right: 14,
     bottom: 16,
-    width: 46,
-    height: 46,
-    borderRadius: 23,
-    backgroundColor: "#fff",
+    width: 50,
+    height: 50,
+    borderRadius: 25,
+    backgroundColor: colors.surface,
     alignItems: "center",
     justifyContent: "center",
-    elevation: 6,
+    borderWidth: 1,
+    borderColor: colors.border,
+    ...shadow.md,
   },
-  locationBtnIcon: { fontSize: 22, color: "#1A1A2E", lineHeight: 24 },
+  locationBtnIcon: { fontSize: 22, color: colors.primary, lineHeight: 24 },
+  locationBtnHidden: { display: "none" },
   card: {
-    backgroundColor: "#fff",
-    borderTopLeftRadius: 24,
-    borderTopRightRadius: 24,
+    backgroundColor: colors.surface,
+    borderTopLeftRadius: 28,
+    borderTopRightRadius: 28,
     paddingHorizontal: 20,
     paddingBottom: 28,
     paddingTop: 10,
-    elevation: 10,
+    ...shadow.lg,
     minHeight: 120,
   },
   cardHidden: { display: "none" },
   cardHandle: {
-    width: 36,
+    width: 40,
     height: 4,
     borderRadius: 2,
-    backgroundColor: "#E0DFD9",
+    backgroundColor: colors.border,
     alignSelf: "center",
     marginBottom: 14,
   },
@@ -784,21 +1006,23 @@ const styles = StyleSheet.create({
     marginBottom: 14,
   },
   cardIconBox: {
-    width: 50,
-    height: 50,
-    borderRadius: 14,
+    width: 52,
+    height: 52,
+    borderRadius: 16,
     backgroundColor: "#FEE2E2",
     alignItems: "center",
     justifyContent: "center",
+    borderWidth: 1,
+    borderColor: "#FECACA",
   },
   cardIcon: { fontSize: 24 },
   cardTextBlock: { flex: 1 },
   cardName: {
     fontSize: 18,
-    fontWeight: "700",
-    color: "#1A1A2E",
+    fontWeight: "800",
+    color: colors.text,
   },
-  cardCoords: { fontSize: 12, color: "#9C9CAA", marginTop: 4 },
+  cardCoords: { fontSize: 12, color: colors.textMuted, marginTop: 4 },
   saveBtn: {
     width: 30,
     height: 30,
@@ -809,23 +1033,24 @@ const styles = StyleSheet.create({
   },
   saveBtnText: { fontSize: 16, color: "#CA8A04" },
   cardClose: {
-    width: 30,
-    height: 30,
-    borderRadius: 15,
-    backgroundColor: "#F0EFE9",
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: colors.borderLight,
     alignItems: "center",
     justifyContent: "center",
   },
-  cardCloseText: { fontSize: 12, color: "#6B6B7B", fontWeight: "600" },
+  cardCloseText: { fontSize: 12, color: colors.textSecondary, fontWeight: "700" },
   setDestBtn: {
-    backgroundColor: "#1A1A2E",
-    borderRadius: 14,
-    paddingVertical: 14,
+    backgroundColor: colors.nav,
+    borderRadius: 16,
+    paddingVertical: 15,
     alignItems: "center",
+    ...shadow.sm,
   },
   setDestBtnText: {
     color: "#fff",
-    fontSize: 15,
-    fontWeight: "600",
+    fontSize: 16,
+    fontWeight: "800",
   },
 });

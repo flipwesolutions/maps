@@ -1,181 +1,162 @@
-export interface SearchPlace {
-  id: string;
-  name: string;
-  subtitle: string;
-  coordinates: [number, number]; // [lng, lat]
-  type?: string;
+import type { SearchPlace, SearchOptions } from "./place-types";
+import {
+  isPlatformConfigured,
+  mapsApiFetch,
+} from "./api-config";
+import {
+  searchLocalPlacesAsync,
+  reverseGeocodeOffline,
+  rankSearchResults,
+} from "./place-index";
+import { searchOsmLive, reverseOsmLive } from "./osm-live-geocoding";
+
+export type { SearchPlace, SearchOptions } from "./place-types";
+
+export {
+  isPlatformConfigured,
+  isServerGeocodingEnabled,
+  isPlatformMode,
+  getMapsApiUrl,
+  getMapStyleUrl,
+  getTileServerUrl,
+} from "./api-config";
+
+const PLATFORM_TIMEOUT_MS = 5000;
+
+function isRawCoordinateLabel(label: string): boolean {
+  return /^-?\d+\.\d+,\s*-?\d+\.\d+$/.test(label.trim());
 }
 
-export interface SearchOptions {
-  proximity?: [number, number];
-}
-
-const NOMINATIM = "https://nominatim.openstreetmap.org";
-const PHOTON = "https://photon.komoot.io/api/";
-
-const INDIA_BOUNDS = { minLng: 68, maxLng: 97.5, minLat: 6.5, maxLat: 37.5 };
-
-function isInIndia([lng, lat]: [number, number]): boolean {
-  return (
-    lat >= INDIA_BOUNDS.minLat &&
-    lat <= INDIA_BOUNDS.maxLat &&
-    lng >= INDIA_BOUNDS.minLng &&
-    lng <= INDIA_BOUNDS.maxLng
-  );
-}
-
-async function nominatimFetch(path: string): Promise<Response> {
-  return fetch(`${NOMINATIM}${path}`, {
-    headers: {
-      Accept: "application/json",
-      "User-Agent": "IndiaExplore/1.0 (expo-mobile)",
-    },
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("timeout")), ms);
+    promise
+      .then((v) => {
+        clearTimeout(timer);
+        resolve(v);
+      })
+      .catch((e) => {
+        clearTimeout(timer);
+        reject(e);
+      });
   });
 }
 
-function formatAddress(address?: Record<string, string>): string {
-  if (!address) return "";
-  const parts = [
-    address.road,
-    address.suburb || address.neighbourhood,
-    address.city || address.town || address.village,
-    address.state,
-  ].filter(Boolean);
-  return parts.join(", ");
-}
-
-function placeNameFromNominatim(item: {
-  display_name: string;
-  address?: Record<string, string>;
-  name?: string;
-}): string {
-  return (
-    item.name ||
-    item.address?.name ||
-    item.address?.road ||
-    item.address?.city ||
-    item.address?.town ||
-    item.address?.village ||
-    item.display_name.split(",")[0]
-  );
-}
-
-async function searchNominatim(
+async function searchViaPlatform(
   query: string,
-  proximity?: [number, number]
+  options: SearchOptions = {}
 ): Promise<SearchPlace[]> {
-  const params = new URLSearchParams({
+  const region = options.region ?? "india";
+  const proximity = options.proximity;
+  const limit = options.limit ?? 25;
+
+  const response = await mapsApiFetch("/api/v1/search", {
     q: query,
-    format: "json",
-    limit: "10",
-    addressdetails: "1",
-    countrycodes: "in",
-    dedupe: "1",
+    region,
+    limit,
+    lat: proximity?.[1],
+    lng: proximity?.[0],
   });
 
-  if (proximity) {
-    const [lng, lat] = proximity;
-    const delta = 2;
-    params.set(
-      "viewbox",
-      `${lng - delta},${lat + delta},${lng + delta},${lat - delta}`
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(
+      (err as { error?: string }).error ??
+        `Platform search failed (${response.status})`
     );
-    params.set("bounded", "0");
   }
 
-  const response = await nominatimFetch(`/search?${params}`);
-  if (!response.ok) return [];
-
-  const results = (await response.json()) as Array<{
-    place_id: number;
-    display_name: string;
-    lat: string;
-    lon: string;
-    type?: string;
-    class?: string;
-    name?: string;
-    address?: Record<string, string>;
-  }>;
-
-  return results.map((item) => ({
-    id: `n-${item.place_id}`,
-    name: placeNameFromNominatim(item),
-    subtitle: formatAddress(item.address) || item.display_name,
-    coordinates: [parseFloat(item.lon), parseFloat(item.lat)],
-    type: item.type ?? item.class,
-  }));
+  const data = (await response.json()) as { results?: SearchPlace[] };
+  return data.results ?? [];
 }
 
-async function searchPhoton(
+async function reverseViaPlatform(
+  coordinates: [number, number]
+): Promise<string> {
+  const response = await mapsApiFetch("/api/v1/reverse", {
+    lat: coordinates[1],
+    lng: coordinates[0],
+  });
+
+  if (!response.ok) throw new Error(`Reverse geocode failed (${response.status})`);
+
+  const data = (await response.json()) as { label?: string };
+  const label = data.label?.trim();
+  if (!label || isRawCoordinateLabel(label)) {
+    throw new Error("No address from platform");
+  }
+  return label;
+}
+
+async function autocompleteViaPlatform(
   query: string,
-  proximity?: [number, number]
+  options: SearchOptions = {}
 ): Promise<SearchPlace[]> {
-  const params = new URLSearchParams({
+  const region = options.region ?? "india";
+  const proximity = options.proximity;
+  const limit = options.limit ?? 10;
+
+  const response = await mapsApiFetch("/api/v1/autocomplete", {
     q: query,
-    limit: "8",
-    lang: "en",
+    region,
+    limit,
+    lat: proximity?.[1],
+    lng: proximity?.[0],
   });
 
-  if (proximity) {
-    params.set("lat", String(proximity[1]));
-    params.set("lon", String(proximity[0]));
+  if (!response.ok) throw new Error(`Autocomplete failed (${response.status})`);
+
+  const data = (await response.json()) as { suggestions?: SearchPlace[] };
+  return data.suggestions ?? [];
+}
+
+async function tryPlatform<T>(fn: () => Promise<T>): Promise<T | null> {
+  if (!isPlatformConfigured()) return null;
+  try {
+    return await withTimeout(fn(), PLATFORM_TIMEOUT_MS);
+  } catch {
+    return null;
   }
-
-  const response = await fetch(`${PHOTON}?${params}`);
-  if (!response.ok) return [];
-
-  const data = (await response.json()) as {
-    features?: Array<{
-      properties: {
-        osm_id: number;
-        name?: string;
-        street?: string;
-        city?: string;
-        state?: string;
-        country?: string;
-        type?: string;
-      };
-      geometry: { coordinates: [number, number] };
-    }>;
-  };
-
-  return (data.features ?? [])
-    .filter((f) => {
-      const coords = f.geometry.coordinates;
-      const country = f.properties.country?.toLowerCase();
-      return isInIndia(coords) && (!country || country === "india");
-    })
-    .map((f) => {
-      const p = f.properties;
-      const name =
-        p.name ||
-        [p.street, p.city].filter(Boolean).join(", ") ||
-        "Unknown place";
-      const subtitle = [p.street, p.city, p.state, "India"]
-        .filter(Boolean)
-        .join(", ");
-
-      return {
-        id: `p-${p.osm_id}`,
-        name,
-        subtitle,
-        coordinates: f.geometry.coordinates,
-        type: p.type,
-      };
-    });
 }
 
-function dedupePlaces(places: SearchPlace[]): SearchPlace[] {
+function mergeDedupe(lists: SearchPlace[][]): SearchPlace[] {
   const seen = new Set<string>();
-  return places.filter((place) => {
-    const key = `${place.coordinates[0].toFixed(4)},${place.coordinates[1].toFixed(4)}`;
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
+  const out: SearchPlace[] = [];
+  for (const list of lists) {
+    for (const p of list) {
+      const key = `${p.name.toLowerCase()}@${p.coordinates[0].toFixed(4)}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(p);
+    }
+  }
+  return out;
 }
 
-/** Search cities, towns, roads, and landmarks anywhere in India. */
+function mergeAndRank(
+  query: string,
+  lists: SearchPlace[][],
+  options: SearchOptions = {}
+): SearchPlace[] {
+  const limit = options.limit ?? 25;
+  const merged = mergeDedupe(lists);
+  const ranked = rankSearchResults(
+    query,
+    merged,
+    options.proximity,
+    Math.max(limit, merged.length)
+  );
+  if (ranked.length >= limit) return ranked.slice(0, limit);
+
+  const rankedIds = new Set(ranked.map((p) => p.id));
+  const rest = merged.filter((p) => !rankedIds.has(p.id));
+  return [...ranked, ...rest].slice(0, limit);
+}
+
+/**
+ * Search: self-hosted Pelias → OSM live (Nominatim/Photon) → offline index.
+ * Runs fallbacks in parallel for speed.
+ */
 export async function searchPlaces(
   query: string,
   options: SearchOptions = {}
@@ -183,33 +164,71 @@ export async function searchPlaces(
   const trimmed = query.trim();
   if (trimmed.length < 2) return [];
 
-  const [nominatim, photon] = await Promise.all([
-    searchNominatim(trimmed, options.proximity),
-    searchPhoton(trimmed, options.proximity),
+  const limit = options.limit ?? 30;
+
+  const [platform, osmLive, offline] = await Promise.all([
+    tryPlatform(() => searchViaPlatform(trimmed, { ...options, limit })),
+    searchOsmLive(trimmed, { ...options, limit }).catch(() => [] as SearchPlace[]),
+    searchLocalPlacesAsync(
+      trimmed,
+      options.proximity,
+      limit,
+      options.region ?? "india"
+    ),
   ]);
 
-  return dedupePlaces([...nominatim, ...photon]).slice(0, 12);
+  return mergeAndRank(trimmed, [platform ?? [], osmLive, offline], {
+    ...options,
+    limit,
+  });
 }
 
+/** Autocomplete: platform → OSM live → offline (parallel). */
+export async function autocompletePlaces(
+  query: string,
+  options: SearchOptions = {}
+): Promise<SearchPlace[]> {
+  const trimmed = query.trim();
+  if (trimmed.length < 1) return [];
+
+  const limit = options.limit ?? 20;
+
+  const [platform, osmLive, offline] = await Promise.all([
+    tryPlatform(() => autocompleteViaPlatform(trimmed, { ...options, limit })),
+    searchOsmLive(trimmed, { ...options, limit }).catch(
+      () => [] as SearchPlace[]
+    ),
+    searchLocalPlacesAsync(
+      trimmed,
+      options.proximity,
+      limit,
+      options.region ?? "india"
+    ),
+  ]);
+
+  return mergeAndRank(trimmed, [platform ?? [], osmLive, offline], {
+    ...options,
+    limit,
+  });
+}
+
+/**
+ * Reverse geocode: Pelias → Nominatim → nearest offline place.
+ * Never returns raw coordinates.
+ */
 export async function reverseGeocode(
   coordinates: [number, number]
 ): Promise<string> {
-  const [lng, lat] = coordinates;
-  const params = new URLSearchParams({
-    lat: String(lat),
-    lon: String(lng),
-    format: "json",
-    zoom: "18",
-    addressdetails: "1",
-  });
+  const platform = await tryPlatform(() => reverseViaPlatform(coordinates));
+  if (platform) return platform;
 
-  const response = await nominatimFetch(`/reverse?${params}`);
-  if (!response.ok) return "Current location";
+  try {
+    return await reverseOsmLive(coordinates);
+  } catch {
+    /* offline fallback */
+  }
 
-  const data = (await response.json()) as {
-    display_name?: string;
-    address?: Record<string, string>;
-  };
-
-  return formatAddress(data.address) || data.display_name?.split(",")[0] || "Current location";
+  return reverseGeocodeOffline(coordinates);
 }
+
+export { getLocalPlaceCount } from "./place-index";

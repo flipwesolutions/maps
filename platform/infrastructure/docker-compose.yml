@@ -1,0 +1,134 @@
+# Flipwi Maps — local infrastructure (100% self-hosted)
+
+COMPOSE_PROJECT_NAME=flipwi-maps
+
+services:
+  postgres:
+    image: postgis/postgis:16-3.4
+    environment:
+      POSTGRES_USER: ${POSTGIS_USER:-flipwi}
+      POSTGRES_PASSWORD: ${POSTGIS_PASSWORD:-flipwi}
+      POSTGRES_DB: ${POSTGIS_DATABASE:-flipwi_maps}
+    ports:
+      - "${POSTGIS_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ../schemas/postgis:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U flipwi -d flipwi_maps"]
+      interval: 10s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redisdata:/data
+
+  opensearch:
+    image: opensearchproject/opensearch:2.11.0
+    environment:
+      discovery.type: single-node
+      DISABLE_SECURITY_PLUGIN: "true"
+      OPENSEARCH_JAVA_OPTS: "-Xms2g -Xmx2g"
+    ports:
+      - "${OPENSEARCH_PORT:-9200}:9200"
+    volumes:
+      - osdata:/usr/share/opensearch/data
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_USER:-flipwi}
+      MINIO_ROOT_PASSWORD: ${MINIO_PASSWORD:-flipwi_minio_secret}
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - miniodata:/data
+
+  api-gateway:
+    build:
+      context: ../../
+      dockerfile: platform/infrastructure/docker/Dockerfile.api-gateway
+    ports:
+      - "${API_PORT:-3001}:3001"
+    environment:
+      PORT: 3001
+      CLIENT_API_KEYS: ${CLIENT_API_KEYS:-dev-client-key}
+      REDIS_HOST: redis
+      PELIAS_HOST: ${PELIAS_HOST:-http://pelias-api:4000}
+      VALHALLA_HOST: ${VALHALLA_HOST:-http://valhalla:8002}
+      TILESERVER_HOST: ${TILESERVER_HOST:-http://martin:3000}
+      POSTGIS_HOST: postgres
+      POSTGIS_PORT: 5432
+      POSTGIS_DATABASE: ${POSTGIS_DATABASE:-flipwi_maps}
+      POSTGIS_USER: ${POSTGIS_USER:-flipwi}
+      POSTGIS_PASSWORD: ${POSTGIS_PASSWORD:-flipwi}
+    depends_on:
+      - postgres
+      - redis
+    volumes:
+      - ./map-styles:/app/platform/infrastructure/map-styles:ro
+
+  nginx:
+    image: nginx:1.25-alpine
+    ports:
+      - "${NGINX_HTTP_PORT:-80}:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - api-gateway
+
+  pelias-api:
+    profiles: [full]
+    image: pelias/api:latest
+    ports:
+      - "4000:4000"
+    volumes:
+      - ./pelias/pelias.json:/code/pelias.json:ro
+    depends_on:
+      - opensearch
+
+  valhalla:
+    profiles: [full]
+    image: ghcr.io/gis-ops/docker-valhalla/valhalla:latest
+    ports:
+      - "8002:8002"
+    volumes:
+      - valhalla_tiles:/custom_files
+      - ../data/osm:/data/osm:ro
+
+  martin:
+    profiles: [full]
+    image: ghcr.io/maplibre/martin:v0.14.0
+    ports:
+      - "3000:3000"
+    volumes:
+      - ../data/tiles:/tiles:ro
+    command: /tiles
+
+  prometheus:
+    profiles: [full]
+    image: prom/prometheus:v2.48.0
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+
+  grafana:
+    profiles: [full]
+    image: grafana/grafana:10.2.0
+    ports:
+      - "3003:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+
+volumes:
+  pgdata:
+  redisdata:
+  osdata:
+  miniodata:
+  valhalla_tiles:

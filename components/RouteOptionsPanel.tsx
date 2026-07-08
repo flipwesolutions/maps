@@ -8,22 +8,28 @@ import {
 } from "react-native";
 import type { RouteResult } from "../lib/routing";
 import { formatDistance, formatDuration } from "../lib/routing";
+import { colors, shadow } from "../lib/theme";
 
 interface RouteOptionsPanelProps {
   routes: RouteResult[];
   selectedIndex: number;
   onSelect: (index: number) => void;
+  navMode?: boolean;
 }
 
 export default function RouteOptionsPanel({
   routes,
   selectedIndex,
   onSelect,
+  navMode = false,
 }: RouteOptionsPanelProps) {
   if (routes.length === 0) return null;
 
   return (
-    <View style={styles.wrap} pointerEvents="box-none">
+    <View
+      style={[styles.wrap, navMode && styles.wrapNav]}
+      pointerEvents="box-none"
+    >
       <ScrollView
         horizontal
         showsHorizontalScrollIndicator={false}
@@ -70,27 +76,27 @@ const styles = StyleSheet.create({
     right: 10,
     zIndex: 10,
   },
+  wrapNav: {
+    top: undefined,
+    bottom: 100,
+  },
   row: {
     gap: 8,
     paddingRight: 8,
   },
   chip: {
-    backgroundColor: "#fff",
-    borderRadius: 12,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    minWidth: 110,
-    borderWidth: 1.5,
-    borderColor: "#E5E4E0",
-    shadowColor: "#000",
-    shadowOpacity: 0.1,
-    shadowRadius: 6,
-    shadowOffset: { width: 0, height: 2 },
-    elevation: 4,
+    backgroundColor: colors.surface,
+    borderRadius: 14,
+    paddingHorizontal: 14,
+    paddingVertical: 11,
+    minWidth: 118,
+    borderWidth: 2,
+    borderColor: colors.border,
+    ...shadow.sm,
   },
   chipActive: {
-    backgroundColor: "#1A1A2E",
-    borderColor: "#1A1A2E",
+    backgroundColor: colors.nav,
+    borderColor: colors.nav,
   },
   chipTop: {
     flexDirection: "row",
@@ -99,20 +105,20 @@ const styles = StyleSheet.create({
     marginBottom: 2,
   },
   time: {
-    fontSize: 14,
-    fontWeight: "700",
-    color: "#1A1A2E",
+    fontSize: 15,
+    fontWeight: "800",
+    color: colors.text,
   },
   timeActive: {
     color: "#fff",
   },
   dist: {
     fontSize: 12,
-    color: "#7C7C8A",
-    fontWeight: "500",
+    color: colors.textSecondary,
+    fontWeight: "600",
   },
   distActive: {
-    color: "#D1D5DB",
+    color: "rgba(255,255,255,0.85)",
   },
   badge: {
     backgroundColor: "#DCFCE7",

@@ -214,3 +214,12 @@ export function viaPointOffset(
   const perp = (bearingBetween(from, to) + 90 * sideSign + 360) % 360;
   return destinationPoint(mid, perp, offsetKm * 1000);
 }
+
+/** Total length of a coordinate polyline in meters. */
+export function polylineLength(coords: [number, number][]): number {
+  let total = 0;
+  for (let i = 0; i < coords.length - 1; i++) {
+    total += distanceMeters(coords[i], coords[i + 1]);
+  }
+  return total;
+}

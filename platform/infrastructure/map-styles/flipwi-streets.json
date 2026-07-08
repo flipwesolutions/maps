@@ -1,0 +1,60 @@
+{
+  "version": 8,
+  "name": "Flipwi Streets",
+  "metadata": {
+    "flipwi:platform": "self-hosted",
+    "flipwi:attribution": "© OpenStreetMap contributors"
+  },
+  "sources": {
+    "flipwi-india": {
+      "type": "vector",
+      "tiles": ["{{TILESERVER_HOST}}/india/{z}/{x}/{y}"],
+      "minzoom": 0,
+      "maxzoom": 14
+    }
+  },
+  "sprite": "{{TILESERVER_HOST}}/sprites/flipwi",
+  "glyphs": "{{TILESERVER_HOST}}/fonts/{fontstack}/{range}.pbf",
+  "layers": [
+    {
+      "id": "background",
+      "type": "background",
+      "paint": { "background-color": "#f8f7f4" }
+    },
+    {
+      "id": "water",
+      "type": "fill",
+      "source": "flipwi-india",
+      "source-layer": "water",
+      "paint": { "fill-color": "#aad3df" }
+    },
+    {
+      "id": "roads",
+      "type": "line",
+      "source": "flipwi-india",
+      "source-layer": "transportation",
+      "paint": {
+        "line-color": "#ffffff",
+        "line-width": ["interpolate", ["linear"], ["zoom"], 10, 0.5, 14, 4]
+      }
+    },
+    {
+      "id": "buildings",
+      "type": "fill",
+      "source": "flipwi-india",
+      "source-layer": "building",
+      "paint": { "fill-color": "#e8e6e0", "fill-opacity": 0.7 }
+    },
+    {
+      "id": "place-labels",
+      "type": "symbol",
+      "source": "flipwi-india",
+      "source-layer": "place",
+      "layout": {
+        "text-field": ["get", "name"],
+        "text-size": 12
+      },
+      "paint": { "text-color": "#1a1a2e" }
+    }
+  ]
+}

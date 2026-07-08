@@ -7,9 +7,13 @@
     "start:local": "expo start --go",
     "android": "expo start --go --host lan",
     "ios": "expo start --go --host lan",
-    "prebuild": "expo prebuild"
+    "prebuild": "expo prebuild",
+    "fetch-places": "node scripts/fetch-places.mjs",
+    "server": "cd server && npm start",
+    "server:install": "cd server && npm install"
   },
   "dependencies": {
+    "@expo/vector-icons": "^15.0.3",
     "@react-native-async-storage/async-storage": "2.2.0",
     "babel-preset-expo": "~54.0.10",
     "expo": "^54.0.0",

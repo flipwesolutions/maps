@@ -1,0 +1,10 @@
+FROM node:20-alpine
+WORKDIR /app
+COPY server/package*.json ./server/
+RUN cd server && npm ci --omit=dev
+COPY server/ ./server/
+COPY platform/infrastructure/map-styles/ ./platform/infrastructure/map-styles/
+WORKDIR /app/server
+ENV NODE_ENV=production
+EXPOSE 3001
+CMD ["node", "src/index.js"]

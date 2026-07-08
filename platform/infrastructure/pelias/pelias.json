@@ -1,0 +1,21 @@
+{
+  "esversion": 7,
+  "imports": {
+    "openstreetmap": {
+      "datapath": "/data/openstreetmap",
+      "files": ["india-latest.osm.pbf"]
+    }
+  },
+  "api": {
+    "host": "pelias-api",
+    "port": 4000
+  },
+  "logger": {
+    "level": "info"
+  },
+  "acceptance-tests": {
+    "endpoints": {
+      "docker": "http://pelias-api:4000/v1/"
+    }
+  }
+}

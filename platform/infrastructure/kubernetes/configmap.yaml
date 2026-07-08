@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: flipwi-maps-config
+  namespace: flipwi-maps
+data:
+  GEOCODING_PROVIDER: "pelias"
+  PELIAS_API_URL: "http://pelias-api:4000"
+  VALHALLA_URL: "http://valhalla:8002"
+  MARTIN_URL: "http://martin:3000"
+  REDIS_URL: "redis://redis:6379"
+  DEFAULT_REGION: "IN"

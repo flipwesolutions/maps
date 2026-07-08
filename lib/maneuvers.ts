@@ -66,7 +66,6 @@ export function formatManeuverDistance(meters: number): string {
   return `${(meters / 1000).toFixed(1)} km`;
 }
 
-/** Short instruction for voice / banner. */
 export function shortInstruction(step: RouteStep): string {
   if (step.type === "arrive") return "You have arrived at your destination";
   const street = step.streetName ? ` onto ${step.streetName}` : "";
@@ -107,4 +106,14 @@ export function voiceInstruction(
   if (distanceMeters < 15) return action;
   if (step.type === "arrive") return action;
   return `In ${dist}, ${action.toLowerCase()}`;
+}
+
+/** Street name for the top navigation card. */
+export function streetLabel(step: RouteStep): string {
+  if (step.streetName) return step.streetName;
+  const onto = step.instruction.match(/\bonto (.+)$/i);
+  if (onto?.[1]) return onto[1];
+  const action = shortInstruction(step);
+  if (action.startsWith("Head")) return "your route";
+  return action;
 }
