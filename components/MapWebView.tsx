@@ -23,6 +23,8 @@ export interface MapMarker {
 
 export interface MapWebViewRef {
   flyTo: (coordinates: [number, number], zoom?: number) => void;
+  zoomIn: () => void;
+  zoomOut: () => void;
   showRoute: (coordinates: [number, number][], color: string) => void;
   showRoutes: (routes: [number, number][][], selectedIndex: number) => void;
   clearRoute: () => void;
@@ -134,6 +136,7 @@ function buildMapHtml(
     .endpoint-dot.pickup { background: #22c55e; }
     .endpoint-dot.drop { background: #ef4444; }
     .maplibregl-ctrl-attrib { font-size: 10px; }
+    .maplibregl-ctrl-top-right { display: none !important; }
   </style>
 </head>
 <body>
@@ -201,6 +204,16 @@ function buildMapHtml(
     window.flyTo = function(lng, lat, zoom) {
       if (!map) return;
       map.flyTo({ center: [lng, lat], zoom: zoom || 14, duration: 600 });
+    };
+
+    window.zoomIn = function() {
+      if (!map) return;
+      map.zoomTo(Math.min(map.getZoom() + 1, CONFIG.maxZoom), { duration: 250 });
+    };
+
+    window.zoomOut = function() {
+      if (!map) return;
+      map.zoomTo(Math.max(map.getZoom() - 1, CONFIG.minZoom), { duration: 250 });
     };
 
     let northUpMode = false;
@@ -541,8 +554,6 @@ function buildMapHtml(
         attributionControl: true,
       });
 
-      map.addControl(new maplibregl.NavigationControl({ showCompass: true }), "top-right");
-
       map.on("load", () => {
         CONFIG.markers.forEach((loc) => {
           new maplibregl.Marker({ element: renderMarker(loc), anchor: "bottom" })
@@ -616,6 +627,12 @@ const MapWebView = forwardRef<MapWebViewRef, MapWebViewProps>(function MapWebVie
   useImperativeHandle(ref, () => ({
     flyTo: (coordinates, zoomLevel = 14) => {
       runInMap(`window.flyTo(${coordinates[0]}, ${coordinates[1]}, ${zoomLevel})`);
+    },
+    zoomIn: () => {
+      runInMap("window.zoomIn()");
+    },
+    zoomOut: () => {
+      runInMap("window.zoomOut()");
     },
     showRoute: (coordinates, color) => {
       runInMap(

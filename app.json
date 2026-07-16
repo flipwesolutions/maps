@@ -6,11 +6,6 @@
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
-    "splash": {
-      "image": "./assets/splash.png",
-      "resizeMode": "contain",
-      "backgroundColor": "#F8F7F4"
-    },
     "ios": {
       "supportsTablet": false,
       "bundleIdentifier": "com.flipwisolutions.maps",
@@ -22,7 +17,7 @@
     "android": {
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
-        "backgroundColor": "#F8F7F4"
+        "backgroundColor": "#FFFFFF"
       },
       "package": "com.flipwisolutions.maps",
       "permissions": [
@@ -32,11 +27,22 @@
     },
     "plugins": [
       [
+        "expo-splash-screen",
+        {
+          "backgroundColor": "#FFFFFF",
+          "image": "./assets/splash.png",
+          "resizeMode": "contain",
+          "imageWidth": 280
+        }
+      ],
+      [
         "expo-location",
         {
           "locationAlwaysAndWhenInUsePermission": "Flipwi Maps needs location access to show you on the map."
         }
-      ]
+      ],
+      "expo-status-bar",
+      "expo-font"
     ],
     "web": {
       "favicon": "./assets/favicon.png"

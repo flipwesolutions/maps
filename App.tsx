@@ -2,21 +2,22 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   StyleSheet,
   View,
-  Text,
-  TouchableOpacity,
   Animated,
-  Platform,
   StatusBar,
   Alert,
 } from "react-native";
-import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
+import { SafeAreaProvider, SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import * as Location from "expo-location";
 import MapWebView, { type MapWebViewRef } from "./components/MapWebView";
+import AppHeader, { APP_HEADER_HEIGHT, HEADER_SEARCH_GAP } from "./components/AppHeader";
+import MapZoomControls from "./components/MapZoomControls";
 import LocationSearchPanel, {
   type SearchField,
 } from "./components/LocationSearchPanel";
 import RouteOptionsPanel from "./components/RouteOptionsPanel";
-import SavedPlacesBar from "./components/SavedPlacesBar";
+import QuickAccessSheet from "./components/QuickAccessSheet";
+import DestinationSheet from "./components/DestinationSheet";
+import MapControls, { BottomNav } from "./components/MapControls";
 import TurnByTurnPanel from "./components/TurnByTurnPanel";
 import NavigationUI from "./components/NavigationUI";
 import {
@@ -63,7 +64,8 @@ import {
   MAP_MAX_ZOOM,
   zoomForPlace,
 } from "./lib/map-config";
-import { colors, shadow } from "./lib/theme";
+import { colors } from "./lib/theme";
+import { bottomStackHeight } from "./lib/layout";
 
 export default function App() {
   return (
@@ -74,6 +76,7 @@ export default function App() {
 }
 
 function FlipwiMapsApp() {
+  const insets = useSafeAreaInsets();
   const mapRef = useRef<MapWebViewRef>(null);
   const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const fieldBlurTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -120,6 +123,12 @@ function FlipwiMapsApp() {
   const [voiceEnabled, setVoiceEnabledState] = useState(true);
   const [northUp, setNorthUp] = useState(false);
   const [showNavRoutes, setShowNavRoutes] = useState(false);
+  const [recentPlace, setRecentPlace] = useState<SearchPlace | null>(null);
+  const [bottomTab, setBottomTab] = useState<
+    "explore" | "location" | "layers" | "routes"
+  >("explore");
+  const [focusRequest, setFocusRequest] = useState<SearchField | null>(null);
+  const [searchPanelBottom, setSearchPanelBottom] = useState(0);
 
   const [routeInfo, setRouteInfo] = useState<{
     distanceMeters: number;
@@ -368,6 +377,7 @@ function FlipwiMapsApp() {
     setDropPlace(normalized);
     setDropLabel(normalized.name);
     setDropQuery(normalized.name);
+    setRecentPlace(normalized);
     setActiveField(null);
     setSearchResults([]);
     flyToPlace(normalized);
@@ -639,13 +649,66 @@ function FlipwiMapsApp() {
     }
   };
 
+  const handleToggleVoice = useCallback(() => {
+    setVoiceEnabledState((prev) => {
+      const next = !prev;
+      setVoiceEnabled(next);
+      return next;
+    });
+  }, []);
+
+  const handleToggleCompass = useCallback(() => {
+    setNorthUp((prev) => {
+      const next = !prev;
+      northUpRef.current = next;
+      if (userLocation) {
+        if (next) {
+          mapRef.current?.setNorthUp(userLocation, userHeading);
+        } else {
+          mapRef.current?.followNavigation(userLocation, userHeading, false);
+        }
+      }
+      return next;
+    });
+  }, [userLocation, userHeading]);
+
   const handleMyLocation = async () => {
+    setBottomTab("location");
     if (userLocation) {
       mapRef.current?.flyTo(userLocation, 14);
       return;
     }
     await handleUseCurrentLocation();
   };
+
+  const handleExploreMap = useCallback(() => {
+    setBottomTab("explore");
+    if (routes.length > 0 && !turnByTurnActive) return;
+    setFocusRequest("drop");
+  }, [routes.length, turnByTurnActive]);
+
+  const handleLayersToggle = useCallback(() => {
+    setBottomTab("layers");
+    if (turnByTurnActive) {
+      handleToggleCompass();
+      return;
+    }
+    const next: SearchRegion = searchRegion === "india" ? "world" : "india";
+    handleSearchRegionChange(next);
+  }, [turnByTurnActive, searchRegion, handleToggleCompass, handleSearchRegionChange]);
+
+  const handleRoutesToggle = useCallback(() => {
+    if (routes.length === 0) return;
+    setBottomTab("routes");
+    if (turnByTurnActive) {
+      setShowNavRoutes((v) => !v);
+      return;
+    }
+    mapRef.current?.flyTo(
+      dropPlace?.coordinates ?? userLocation ?? INDIA_CENTER,
+      12
+    );
+  }, [routes.length, turnByTurnActive, dropPlace, userLocation]);
 
   const clearDestination = () => {
     clearRoute();
@@ -674,29 +737,6 @@ function FlipwiMapsApp() {
     setSavedPlaces(updated);
   };
 
-  const handleToggleVoice = useCallback(() => {
-    setVoiceEnabledState((prev) => {
-      const next = !prev;
-      setVoiceEnabled(next);
-      return next;
-    });
-  }, []);
-
-  const handleToggleCompass = useCallback(() => {
-    setNorthUp((prev) => {
-      const next = !prev;
-      northUpRef.current = next;
-      if (userLocation) {
-        if (next) {
-          mapRef.current?.setNorthUp(userLocation, userHeading);
-        } else {
-          mapRef.current?.followNavigation(userLocation, userHeading, false);
-        }
-      }
-      return next;
-    });
-  }, [userLocation, userHeading]);
-
   const routeSummary = routeInfo
     ? `${formatDistance(routeInfo.distanceMeters)} · ${formatDuration(routeInfo.durationSeconds)}`
     : null;
@@ -708,85 +748,46 @@ function FlipwiMapsApp() {
 
   const isSaved = dropPlace ? isPlaceSaved(dropPlace.id, savedPlaces) : false;
 
+  const headerSubtitle = isPlatformConfigured()
+    ? "Live search · routing · navigation"
+    : searchRegion === "india"
+      ? `${localPlaceCount.toLocaleString()}+ places across India`
+      : `${localPlaceCount.toLocaleString()}+ cities worldwide`;
+
+  const showHomeChrome = !turnByTurnActive;
+  const showHomeNavbar =
+    showHomeChrome && routes.length === 0 && !dropPlace && !navigating;
+  const showSearchPanel = showHomeNavbar;
+  const showQuickAccess = showHomeNavbar;
+  const showDestinationSheet =
+    showHomeChrome && routes.length === 0 && Boolean(dropPlace);
+  const showFloatingControls = showHomeNavbar;
+  const canRoute = Boolean(
+    pickupCoords &&
+      (dropPlace || dropQuery.trim().length >= 2 || dropLabel.trim().length >= 2)
+  );
+
+  useEffect(() => {
+    if (!showSearchPanel) setSearchPanelBottom(0);
+  }, [showSearchPanel]);
+
+  const chromeBottomHeight = showFloatingControls
+    ? bottomStackHeight(showQuickAccess, true)
+    : 0;
+
+  const zoomControlsTop =
+    showSearchPanel && searchPanelBottom > 0
+      ? searchPanelBottom + 12
+      : insets.top + APP_HEADER_HEIGHT + HEADER_SEARCH_GAP + 12;
+
   return (
     <SafeAreaView
       style={[styles.safe, turnByTurnActive && styles.safeNav]}
-      edges={turnByTurnActive ? ["top"] : ["top", "left", "right"]}
+      edges={turnByTurnActive ? ["top"] : []}
     >
-      <StatusBar barStyle="dark-content" backgroundColor={colors.bg} />
+      <StatusBar barStyle="dark-content" backgroundColor="transparent" translucent />
 
-      {!turnByTurnActive && (
-        <View style={styles.header}>
-          <View style={styles.headerBadge}>
-            <Text style={styles.headerBadgeText}>FLIPWI</Text>
-          </View>
-          <View style={styles.headerTextBlock}>
-            <Text style={styles.headerTitle}>Maps</Text>
-            <Text style={styles.headerSub}>
-              {isPlatformConfigured()
-                ? "Live search · routing · navigation"
-                : searchRegion === "india"
-                  ? `${localPlaceCount.toLocaleString()}+ places across India`
-                  : `${localPlaceCount.toLocaleString()}+ cities worldwide`}
-            </Text>
-          </View>
-        </View>
-      )}
-
-      {!turnByTurnActive && (
-        <LocationSearchPanel
-          pickupLabel={pickupLabel}
-          dropLabel={dropLabel}
-          useCurrentLocation={useCurrentLocation}
-          searching={searching}
-          navigating={navigating}
-          canRoute={Boolean(
-            pickupCoords &&
-              (dropPlace || dropQuery.trim().length >= 2 || dropLabel.trim().length >= 2)
-          )}
-          searchRegion={searchRegion}
-          onSearchRegionChange={handleSearchRegionChange}
-          localPlaceCount={localPlaceCount}
-          routeSummary={routeSummary}
-          activeField={activeField}
-          pickupQuery={pickupQuery}
-          dropQuery={dropQuery}
-          results={searchResults}
-          onPickupFocus={() => {
-            if (fieldBlurTimer.current) clearTimeout(fieldBlurTimer.current);
-            setActiveField("pickup");
-            setPickupQuery(pickupLabel || pickupQuery);
-          }}
-          onDropFocus={() => {
-            if (fieldBlurTimer.current) clearTimeout(fieldBlurTimer.current);
-            setActiveField("drop");
-            setDropQuery(dropLabel || dropQuery);
-          }}
-          onPickupBlur={() => handleFieldBlur("pickup")}
-          onDropBlur={() => handleFieldBlur("drop")}
-          onPickupChange={setPickupQuery}
-          onDropChange={setDropQuery}
-          onUseCurrentLocation={handleUseCurrentLocation}
-          onSelectPlace={handleSelectPlace}
-          onShowRoute={handleShowRoute}
-          onClearRoute={clearRoute}
-        />
-      )}
-
-      {!turnByTurnActive && (
-        <SavedPlacesBar
-          places={savedPlaces}
-          onSelect={handleSavedPlaceSelect}
-          onRemove={handleRemoveSaved}
-        />
-      )}
-
-      <View
-        style={[
-          styles.mapContainer,
-          turnByTurnActive && styles.mapContainerNav,
-        ]}
-      >
+      <View style={styles.mapLayer}>
         <MapWebView
           ref={mapRef}
           mapStyle={MAP_STYLE}
@@ -808,25 +809,95 @@ function FlipwiMapsApp() {
             setActiveField(null);
           }}
         />
-
-        <TouchableOpacity
-          style={[
-            styles.locationBtn,
-            turnByTurnActive && styles.locationBtnHidden,
-          ]}
-          onPress={handleMyLocation}
-          activeOpacity={0.8}
-        >
-          <Text style={styles.locationBtnIcon}>◎</Text>
-        </TouchableOpacity>
-
-        <RouteOptionsPanel
-          routes={turnByTurnActive && !showNavRoutes ? [] : routes}
-          selectedIndex={selectedRouteIndex}
-          onSelect={handleSelectRoute}
-          navMode={turnByTurnActive && showNavRoutes}
-        />
       </View>
+
+      {showHomeNavbar && <AppHeader subtitle={headerSubtitle} />}
+
+      <LocationSearchPanel
+        hidden={!showSearchPanel}
+        pickupLabel={pickupLabel}
+        dropLabel={dropLabel}
+        useCurrentLocation={useCurrentLocation}
+        searching={searching}
+        navigating={navigating}
+        canRoute={canRoute}
+        searchRegion={searchRegion}
+        onSearchRegionChange={handleSearchRegionChange}
+        localPlaceCount={localPlaceCount}
+        routeSummary={routeSummary}
+        activeField={activeField}
+        pickupQuery={pickupQuery}
+        dropQuery={dropQuery}
+        results={searchResults}
+        focusRequest={focusRequest}
+        onFocusRequestHandled={() => setFocusRequest(null)}
+        onPickupFocus={() => {
+          if (fieldBlurTimer.current) clearTimeout(fieldBlurTimer.current);
+          setActiveField("pickup");
+          setPickupQuery(pickupLabel || pickupQuery);
+        }}
+        onDropFocus={() => {
+          if (fieldBlurTimer.current) clearTimeout(fieldBlurTimer.current);
+          setActiveField("drop");
+          setDropQuery(dropLabel || dropQuery);
+        }}
+        onPickupBlur={() => handleFieldBlur("pickup")}
+        onDropBlur={() => handleFieldBlur("drop")}
+        onPickupChange={setPickupQuery}
+        onDropChange={setDropQuery}
+        onUseCurrentLocation={handleUseCurrentLocation}
+        onSelectPlace={handleSelectPlace}
+        onShowRoute={handleShowRoute}
+        onClearRoute={clearRoute}
+        onLayoutHeight={setSearchPanelBottom}
+      />
+
+      <MapZoomControls
+        hidden={!showHomeNavbar}
+        top={zoomControlsTop}
+        onZoomIn={() => mapRef.current?.zoomIn()}
+        onZoomOut={() => mapRef.current?.zoomOut()}
+      />
+
+      <QuickAccessSheet
+        hidden={!showQuickAccess}
+        savedPlaces={savedPlaces}
+        recentPlace={recentPlace}
+        onSelect={handleSavedPlaceSelect}
+        onRemoveSaved={handleRemoveSaved}
+      />
+
+      <RouteOptionsPanel
+        routes={turnByTurnActive && !showNavRoutes ? [] : routes}
+        selectedIndex={selectedRouteIndex}
+        onSelect={handleSelectRoute}
+        navMode={turnByTurnActive && showNavRoutes}
+      />
+
+      <MapControls
+        hidden={!showFloatingControls}
+        bottomStackHeight={chromeBottomHeight}
+        onMyLocation={handleMyLocation}
+        onExplore={() => {
+          if (userLocation) mapRef.current?.flyTo(userLocation, 12);
+          else handleExploreMap();
+        }}
+        onLayers={handleLayersToggle}
+        onRoutes={handleRoutesToggle}
+        hasRoutes={routes.length > 0}
+        layersActive={turnByTurnActive ? northUp : searchRegion === "world"}
+      />
+
+      <BottomNav
+        hidden={!showFloatingControls}
+        aboveQuickAccess={showQuickAccess}
+        activeTab={bottomTab}
+        onLocation={handleMyLocation}
+        onExplore={handleExploreMap}
+        onLayers={handleLayersToggle}
+        onRoutes={handleRoutesToggle}
+        hasRoutes={routes.length > 0}
+      />
 
       {turnByTurnActive && navProgress && (
         <NavigationUI
@@ -853,204 +924,37 @@ function FlipwiMapsApp() {
         />
       )}
 
-      {routes.length > 0 && !turnByTurnActive ? (
+      {routes.length > 0 && !turnByTurnActive && (
         <TurnByTurnPanel
           steps={routeSteps}
           currentStepIndex={currentStepIndex}
           isNavigating={turnByTurnActive}
+          routeSummary={routeSummary}
           onStart={startTurnByTurn}
           onStop={stopLocationWatch}
+          onDismiss={clearRoute}
         />
-      ) : !turnByTurnActive ? (
-        <Animated.View
-          style={[
-            styles.card,
-            { transform: [{ translateY: cardTranslateY }] },
-            !dropPlace && styles.cardHidden,
-          ]}
-        >
-          {dropPlace && (
-            <>
-              <View style={styles.cardHandle} />
-              <View style={styles.cardRow}>
-                <View style={styles.cardIconBox}>
-                  <Text style={styles.cardIcon}>📍</Text>
-                </View>
-                <View style={styles.cardTextBlock}>
-                  <Text style={styles.cardName}>{dropPlace.name}</Text>
-                  <Text style={styles.cardCoords} numberOfLines={2}>
-                    {dropPlace.subtitle}
-                  </Text>
-                </View>
-                <TouchableOpacity
-                  onPress={handleSaveDestination}
-                  style={styles.saveBtn}
-                >
-                  <Text style={styles.saveBtnText}>{isSaved ? "★" : "☆"}</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  onPress={clearDestination}
-                  style={styles.cardClose}
-                >
-                  <Text style={styles.cardCloseText}>✕</Text>
-                </TouchableOpacity>
-              </View>
-              <TouchableOpacity
-                style={styles.setDestBtn}
-                onPress={handleShowRoute}
-                disabled={!pickupCoords || navigating}
-                activeOpacity={0.85}
-              >
-                <Text style={styles.setDestBtnText}>
-                  {navigating ? "Loading route…" : "Get directions here"}
-                </Text>
-              </TouchableOpacity>
-            </>
-          )}
-        </Animated.View>
-      ) : null}
+      )}
+
+      <DestinationSheet
+        visible={showDestinationSheet}
+        place={dropPlace!}
+        isSaved={isSaved}
+        navigating={navigating}
+        canRoute={canRoute}
+        translateY={cardTranslateY}
+        onSave={handleSaveDestination}
+        onClose={clearDestination}
+        onGetDirections={handleShowRoute}
+      />
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: colors.bg },
+  safe: { flex: 1, backgroundColor: colors.background },
   safeNav: { backgroundColor: colors.surface },
-  header: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 12,
-    paddingHorizontal: 18,
-    paddingTop: Platform.OS === "android" ? 8 : 4,
-    paddingBottom: 8,
-  },
-  headerBadge: {
-    backgroundColor: colors.primary,
-    borderRadius: 12,
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-    ...shadow.sm,
-  },
-  headerBadgeText: {
-    fontSize: 11,
-    fontWeight: "900",
-    color: "#fff",
-    letterSpacing: 1.2,
-  },
-  headerTextBlock: { flex: 1 },
-  headerTitle: {
-    fontSize: 26,
-    fontWeight: "800",
-    color: colors.text,
-    letterSpacing: -0.6,
-    lineHeight: 30,
-  },
-  headerSub: {
-    fontSize: 13,
-    color: colors.textSecondary,
-    marginTop: 2,
-    fontWeight: "500",
-  },
-  mapContainer: {
-    flex: 1,
-    marginHorizontal: 14,
-    marginBottom: 10,
-    borderRadius: 22,
-    overflow: "hidden",
-    ...shadow.md,
-  },
-  mapContainerNav: {
-    marginHorizontal: 0,
-    marginBottom: 0,
-    borderRadius: 0,
-  },
-  locationBtn: {
-    position: "absolute",
-    right: 14,
-    bottom: 16,
-    width: 50,
-    height: 50,
-    borderRadius: 25,
-    backgroundColor: colors.surface,
-    alignItems: "center",
-    justifyContent: "center",
-    borderWidth: 1,
-    borderColor: colors.border,
-    ...shadow.md,
-  },
-  locationBtnIcon: { fontSize: 22, color: colors.primary, lineHeight: 24 },
-  locationBtnHidden: { display: "none" },
-  card: {
-    backgroundColor: colors.surface,
-    borderTopLeftRadius: 28,
-    borderTopRightRadius: 28,
-    paddingHorizontal: 20,
-    paddingBottom: 28,
-    paddingTop: 10,
-    ...shadow.lg,
-    minHeight: 120,
-  },
-  cardHidden: { display: "none" },
-  cardHandle: {
-    width: 40,
-    height: 4,
-    borderRadius: 2,
-    backgroundColor: colors.border,
-    alignSelf: "center",
-    marginBottom: 14,
-  },
-  cardRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 12,
-    marginBottom: 14,
-  },
-  cardIconBox: {
-    width: 52,
-    height: 52,
-    borderRadius: 16,
-    backgroundColor: "#FEE2E2",
-    alignItems: "center",
-    justifyContent: "center",
-    borderWidth: 1,
-    borderColor: "#FECACA",
-  },
-  cardIcon: { fontSize: 24 },
-  cardTextBlock: { flex: 1 },
-  cardName: {
-    fontSize: 18,
-    fontWeight: "800",
-    color: colors.text,
-  },
-  cardCoords: { fontSize: 12, color: colors.textMuted, marginTop: 4 },
-  saveBtn: {
-    width: 30,
-    height: 30,
-    borderRadius: 15,
-    backgroundColor: "#FEF9C3",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  saveBtnText: { fontSize: 16, color: "#CA8A04" },
-  cardClose: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: colors.borderLight,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  cardCloseText: { fontSize: 12, color: colors.textSecondary, fontWeight: "700" },
-  setDestBtn: {
-    backgroundColor: colors.nav,
-    borderRadius: 16,
-    paddingVertical: 15,
-    alignItems: "center",
-    ...shadow.sm,
-  },
-  setDestBtnText: {
-    color: "#fff",
-    fontSize: 16,
-    fontWeight: "800",
+  mapLayer: {
+    ...StyleSheet.absoluteFill,
   },
 });

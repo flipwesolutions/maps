@@ -371,7 +371,7 @@ export default function NavigationUI({
 
 const styles = StyleSheet.create({
   overlay: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     zIndex: 30,
   },
   topWrap: {
@@ -380,7 +380,7 @@ const styles = StyleSheet.create({
   topCard: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: colors.nav,
+    backgroundColor: colors.primary,
     borderRadius: 18,
     paddingVertical: 16,
     paddingHorizontal: 16,
@@ -388,7 +388,7 @@ const styles = StyleSheet.create({
     ...shadow.lg,
   },
   arrivedCard: {
-    backgroundColor: colors.success,
+    backgroundColor: colors.primaryContainer,
   },
   maneuverIconWrap: {
     width: 52,
@@ -418,7 +418,7 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
-    backgroundColor: colors.navDark,
+    backgroundColor: colors.primaryDark,
     borderBottomLeftRadius: 12,
     borderBottomRightRadius: 12,
     paddingHorizontal: 14,
@@ -459,9 +459,9 @@ const styles = StyleSheet.create({
     ...shadow.md,
   },
   fabActive: {
-    backgroundColor: "#ECFDF5",
+    backgroundColor: colors.secondaryContainer,
     borderWidth: 2,
-    borderColor: colors.nav,
+    borderColor: colors.primary,
   },
   bottomBar: {
     position: "absolute",
@@ -604,9 +604,9 @@ const styles = StyleSheet.create({
     backgroundColor: colors.borderLight,
   },
   stepRowActive: {
-    backgroundColor: "#ECFDF5",
+    backgroundColor: colors.secondaryContainer,
     borderWidth: 1.5,
-    borderColor: "#6EE7B7",
+    borderColor: colors.primaryFixedDim,
   },
   stepRowDone: {
     opacity: 0.5,
@@ -620,7 +620,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   stepIndexActive: {
-    backgroundColor: colors.nav,
+    backgroundColor: colors.primary,
   },
   stepIndexText: {
     fontSize: 11,
@@ -650,7 +650,7 @@ const styles = StyleSheet.create({
   sheetClose: {
     marginHorizontal: 20,
     marginTop: 8,
-    backgroundColor: colors.nav,
+    backgroundColor: colors.primary,
     borderRadius: 14,
     paddingVertical: 14,
     alignItems: "center",

@@ -8,7 +8,8 @@ import {
 } from "react-native";
 import type { RouteResult } from "../lib/routing";
 import { formatDistance, formatDuration } from "../lib/routing";
-import { colors, shadow } from "../lib/theme";
+import GlassPanel from "./ui/GlassPanel";
+import { colors, radius, spacing } from "../lib/theme";
 
 interface RouteOptionsPanelProps {
   routes: RouteResult[];
@@ -43,23 +44,28 @@ export default function RouteOptionsPanel({
           return (
             <TouchableOpacity
               key={index}
-              style={[styles.chip, active && styles.chipActive]}
               onPress={() => onSelect(index)}
-              activeOpacity={0.85}
+              activeOpacity={0.88}
             >
-              <View style={styles.chipTop}>
-                <Text style={[styles.time, active && styles.timeActive]}>
-                  {formatDuration(route.durationSeconds)}
-                </Text>
-                <View style={[styles.badge, !isFastest && styles.altBadge]}>
-                  <Text style={[styles.badgeText, !isFastest && styles.altBadgeText]}>
-                    {badgeLabel}
+              <GlassPanel
+                style={[styles.chip, active && styles.chipActive]}
+                rounded="xl"
+                elevated
+              >
+                <View style={styles.chipTop}>
+                  <Text style={[styles.time, active && styles.timeActive]}>
+                    {formatDuration(route.durationSeconds)}
                   </Text>
+                  <View style={[styles.badge, !isFastest && styles.altBadge]}>
+                    <Text style={[styles.badgeText, !isFastest && styles.altBadgeText]}>
+                      {badgeLabel}
+                    </Text>
+                  </View>
                 </View>
-              </View>
-              <Text style={[styles.dist, active && styles.distActive]}>
-                {formatDistance(route.distanceMeters)}
-              </Text>
+                <Text style={[styles.dist, active && styles.distActive]}>
+                  {formatDistance(route.distanceMeters)}
+                </Text>
+              </GlassPanel>
             </TouchableOpacity>
           );
         })}
@@ -71,32 +77,29 @@ export default function RouteOptionsPanel({
 const styles = StyleSheet.create({
   wrap: {
     position: "absolute",
-    top: 10,
-    left: 10,
-    right: 10,
-    zIndex: 10,
+    top: spacing.safe + 72,
+    left: spacing.safe,
+    right: spacing.safe,
+    zIndex: 30,
   },
   wrapNav: {
     top: undefined,
-    bottom: 100,
+    bottom: 120,
   },
   row: {
     gap: 8,
     paddingRight: 8,
   },
   chip: {
-    backgroundColor: colors.surface,
-    borderRadius: 14,
     paddingHorizontal: 14,
     paddingVertical: 11,
     minWidth: 118,
     borderWidth: 2,
-    borderColor: colors.border,
-    ...shadow.sm,
+    borderColor: colors.outlineVariant,
   },
   chipActive: {
-    backgroundColor: colors.nav,
-    borderColor: colors.nav,
+    backgroundColor: colors.primary,
+    borderColor: colors.primary,
   },
   chipTop: {
     flexDirection: "row",
@@ -107,21 +110,17 @@ const styles = StyleSheet.create({
   time: {
     fontSize: 15,
     fontWeight: "800",
-    color: colors.text,
+    color: colors.onSurface,
   },
-  timeActive: {
-    color: "#fff",
-  },
+  timeActive: { color: colors.onPrimary },
   dist: {
     fontSize: 12,
-    color: colors.textSecondary,
+    color: colors.onSurfaceVariant,
     fontWeight: "600",
   },
-  distActive: {
-    color: "rgba(255,255,255,0.85)",
-  },
+  distActive: { color: "rgba(255,255,255,0.9)" },
   badge: {
-    backgroundColor: "#DCFCE7",
+    backgroundColor: colors.secondaryContainer,
     borderRadius: 6,
     paddingHorizontal: 5,
     paddingVertical: 1,
@@ -129,17 +128,12 @@ const styles = StyleSheet.create({
   badgeText: {
     fontSize: 9,
     fontWeight: "700",
-    color: "#15803D",
+    color: colors.primaryDark,
   },
   altBadge: {
-    backgroundColor: "#F3F4F6",
-    borderRadius: 6,
-    paddingHorizontal: 5,
-    paddingVertical: 1,
+    backgroundColor: colors.surfaceContainerHigh,
   },
   altBadgeText: {
-    fontSize: 9,
-    fontWeight: "600",
-    color: "#6B7280",
+    color: colors.outline,
   },
 });
